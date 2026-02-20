@@ -1,4 +1,4 @@
-"""Entropy Finance — Valuation Terminal with Entropy Radar.
+"""Fintropy — Valuation Terminal with Entropy Radar.
 
 Combines traditional valuation (DCF, ratios) with an entropy intelligence
 layer that detects when the rules around a stock are changing.
@@ -28,7 +28,7 @@ from accuracy import run_cross_stock_backtest, run_analyst_comparison
 # Setup
 # ---------------------------------------------------------------------------
 load_dotenv()
-st.set_page_config(page_title="Entropy Finance", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Fintropy", page_icon="📊", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Custom CSS — clean professional finance aesthetic
@@ -290,7 +290,7 @@ with st.sidebar:
     st.markdown("""
     <div style="text-align:center; padding: 16px 0 8px 0;">
         <div style="font-size: 2.2rem; font-weight: 800; color: #1B6B4A; letter-spacing: -0.03em; line-height: 1.1;">
-            Entropy<br>Finance
+            Fintropy
         </div>
         <div style="font-size: 0.78rem; color: #6B7280; margin-top: 4px; letter-spacing: 0.08em; text-transform: uppercase;">
             Valuation + Entropy Intelligence
@@ -1644,7 +1644,7 @@ Write a concise 3-4 paragraph analysis:
             st.markdown(safe_text)
 
 else:
-    st.title("📊 Entropy Finance")
+    st.title("📊 Fintropy")
     st.markdown("""
     **Enter a ticker and click Analyze** to get:
     - Traditional valuation (DCF, key ratios)

@@ -1,4 +1,4 @@
-# Entropy Finance — Valuation Terminal with Entropy Radar
+# Fintropy — Valuation Terminal with Entropy Radar
 
 ## The Problem
 Traditional valuation tools (P/E, DCF) tell you what a stock is worth *today*, but they don't tell you whether the regime around that stock is changing. Information theory provides tools to detect regime shifts, directional causation, and structural breaks — but these are trapped in academic papers and custom scripts. There's no tool that synthesizes entropy concepts into an actionable intelligence layer alongside traditional valuation.

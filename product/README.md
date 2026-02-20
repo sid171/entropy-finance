@@ -1,4 +1,4 @@
-# Entropy Finance Assistant
+# Fintropy
 
 This project follows the DRIVER methodology for finance/quant tool development.
 

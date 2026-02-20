@@ -1,4 +1,4 @@
-# Entropy Finance
+# Fintropy
 
 A financial analysis terminal that combines traditional valuation (DCF, ratios) with an **entropy intelligence layer** — detecting when the rules around a stock are changing using information theory.
 
