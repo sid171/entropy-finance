@@ -108,16 +108,10 @@ with st.sidebar:
     chat_input = st.chat_input("Ask a question...", key="chat")
 
 # ---------------------------------------------------------------------------
-# Main analysis
+# Run analysis (compute and cache in session_state)
 # ---------------------------------------------------------------------------
-if analyze_btn or "last_ticker" not in st.session_state:
-    st.session_state["last_ticker"] = ticker
-    st.session_state["run_analysis"] = True
-
-if st.session_state.get("run_analysis"):
-    st.session_state["run_analysis"] = False
-    tkr = st.session_state["last_ticker"]
-
+if analyze_btn or "cached_analysis" not in st.session_state:
+    tkr = ticker
     try:
         with st.spinner(f"Analyzing {tkr}..."):
             info = get_company_info(tkr)
@@ -125,7 +119,16 @@ if st.session_state.get("run_analysis"):
             prices = get_price_data(tkr, period)
             radar = run_entropy_radar(tkr, info.get("sector", ""), period)
 
-        # Store for chat context
+        # Cache everything for re-rendering
+        st.session_state["cached_analysis"] = {
+            "info": info,
+            "dcf": dcf,
+            "prices": prices,
+            "radar": radar,
+            "ticker": tkr,
+        }
+
+        # Also store lightweight version for chat context
         st.session_state["analysis_data"] = {
             "info": info, "dcf": dcf, "radar": {
                 k: v for k, v in radar.items()
@@ -133,216 +136,232 @@ if st.session_state.get("run_analysis"):
             }, "ticker": tkr,
         }
 
-        # ================================================================
-        # HEADER + ENTROPY SCORE
-        # ================================================================
-        header_col, score_col = st.columns([3, 1])
-        with header_col:
-            st.title(f"{info['name']} ({tkr})")
-            st.caption(f"{info.get('sector', 'N/A')} · {info.get('industry', 'N/A')}")
-        with score_col:
-            es = radar["entropy_score"]
-            st.metric(
-                f"{score_color(es['composite_score'])} Entropy Score",
-                f"{es['composite_score']}/100",
-            )
-            st.caption(es["interpretation"])
+    except Exception as e:
+        st.error(f"Error analyzing {tkr}: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
-        # ================================================================
-        # TABS
-        # ================================================================
-        tab_val, tab_radar, tab_flow, tab_detail = st.tabs([
-            "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "📋 Details"
-        ])
+# ---------------------------------------------------------------------------
+# Render analysis from cache
+# ---------------------------------------------------------------------------
+if "cached_analysis" in st.session_state:
+    cached = st.session_state["cached_analysis"]
+    info = cached["info"]
+    dcf = cached["dcf"]
+    prices = cached["prices"]
+    radar = cached["radar"]
+    tkr = cached["ticker"]
 
-        # ---- VALUATION TAB ----
-        with tab_val:
-            # Key metrics
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            c1.metric("Price", f"${info['current_price']:.2f}" if info['current_price'] else "N/A")
-            c2.metric("Market Cap", fmt_num(info['market_cap']))
-            c3.metric("P/E", fmt_ratio(info['pe_ratio']))
-            c4.metric("P/B", fmt_ratio(info['pb_ratio']))
-            c5.metric("EV/EBITDA", fmt_ratio(info['ev_ebitda']))
-            c6.metric("Beta", fmt_ratio(info['beta']))
+    # ================================================================
+    # HEADER + ENTROPY SCORE
+    # ================================================================
+    header_col, score_col = st.columns([3, 1])
+    with header_col:
+        st.title(f"{info['name']} ({tkr})")
+        st.caption(f"{info.get('sector', 'N/A')} · {info.get('industry', 'N/A')}")
+    with score_col:
+        es = radar["entropy_score"]
+        st.metric(
+            f"{score_color(es['composite_score'])} Entropy Score",
+            f"{es['composite_score']}/100",
+        )
+        st.caption(es["interpretation"])
 
-            c7, c8, c9, c10, c11, c12 = st.columns(6)
-            c7.metric("Revenue", fmt_num(info['revenue']))
-            c8.metric("EBITDA", fmt_num(info['ebitda']))
-            c9.metric("FCF", fmt_num(info['free_cash_flow']))
-            c10.metric("Profit Margin", fmt_pct(info['profit_margin']))
-            c11.metric("ROE", fmt_pct(info['roe']))
-            c12.metric("Div Yield", fmt_pct(info['dividend_yield']))
+    # ================================================================
+    # TABS
+    # ================================================================
+    tab_val, tab_radar, tab_flow, tab_detail = st.tabs([
+        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "📋 Details"
+    ])
 
-            st.divider()
+    # ---- VALUATION TAB ----
+    with tab_val:
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Price", f"${info['current_price']:.2f}" if info['current_price'] else "N/A")
+        c2.metric("Market Cap", fmt_num(info['market_cap']))
+        c3.metric("P/E", fmt_ratio(info['pe_ratio']))
+        c4.metric("P/B", fmt_ratio(info['pb_ratio']))
+        c5.metric("EV/EBITDA", fmt_ratio(info['ev_ebitda']))
+        c6.metric("Beta", fmt_ratio(info['beta']))
 
-            # DCF
-            st.subheader("DCF Valuation")
-            if "error" in dcf:
-                st.warning(f"DCF: {dcf['error']}")
-                if "note" in dcf:
-                    st.info(dcf["note"])
-            else:
-                v1, v2, v3, v4 = st.columns(4)
-                delta_color = "normal" if dcf["upside_pct"] > 0 else "inverse"
-                v1.metric("Intrinsic Value", f"${dcf['intrinsic_value']:.2f}",
-                          delta=f"{dcf['upside_pct']:+.1f}%", delta_color=delta_color)
-                v2.metric("Current Price", f"${dcf['current_price']:.2f}")
-                v3.metric("Verdict", dcf["verdict"])
-                v4.metric("FCF Growth", f"{dcf['fcf_growth_rate']}%")
+        c7, c8, c9, c10, c11, c12 = st.columns(6)
+        c7.metric("Revenue", fmt_num(info['revenue']))
+        c8.metric("EBITDA", fmt_num(info['ebitda']))
+        c9.metric("FCF", fmt_num(info['free_cash_flow']))
+        c10.metric("Profit Margin", fmt_pct(info['profit_margin']))
+        c11.metric("ROE", fmt_pct(info['roe']))
+        c12.metric("Div Yield", fmt_pct(info['dividend_yield']))
 
-                with st.expander("DCF Details"):
-                    dc1, dc2, dc3 = st.columns(3)
-                    dc1.markdown(f"**Assumptions:**\n- WACC: {dcf['discount_rate']}%\n- Terminal Growth: {dcf['terminal_growth']}%\n- Latest FCF: {fmt_num(dcf['latest_fcf'])}")
-                    dc2.markdown(f"**Present Values:**\n- PV of FCFs: {fmt_num(dcf['pv_of_fcfs'])}\n- PV Terminal: {fmt_num(dcf['pv_terminal_value'])}")
-                    dc3.markdown(f"**Adjustments:**\n- Cash: +{fmt_num(dcf['total_cash'])}\n- Debt: -{fmt_num(dcf['total_debt'])}\n- Equity: {fmt_num(dcf['equity_value'])}")
-                    fcf_df = pd.DataFrame(dcf["projected_fcf"])
-                    fcf_df.columns = ["Year", "Projected FCF", "PV of FCF"]
-                    st.dataframe(fcf_df, use_container_width=True, hide_index=True)
+        st.divider()
 
-        # ---- ENTROPY RADAR TAB ----
-        with tab_radar:
-            st.subheader("Entropy Radar")
-            st.caption("Is the regime around this stock changing?")
+        # DCF
+        st.subheader("DCF Valuation")
+        if "error" in dcf:
+            st.warning(f"DCF: {dcf['error']}")
+            if "note" in dcf:
+                st.info(dcf["note"])
+        else:
+            v1, v2, v3, v4 = st.columns(4)
+            delta_color = "normal" if dcf["upside_pct"] > 0 else "inverse"
+            v1.metric("Intrinsic Value", f"${dcf['intrinsic_value']:.2f}",
+                      delta=f"{dcf['upside_pct']:+.1f}%", delta_color=delta_color)
+            v2.metric("Current Price", f"${dcf['current_price']:.2f}")
+            v3.metric("Verdict", dcf["verdict"])
+            v4.metric("FCF Growth", f"{dcf['fcf_growth_rate']}%")
 
-            # Score breakdown
-            es = radar["entropy_score"]
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Regime Instability", f"{es['regime_instability']}/100")
-            s2.metric("Information Flow", f"{es['information_flow']}/100")
-            s3.metric("Relationship Stress", f"{es['relationship_stress']}/100")
-            s4.metric("Uncertainty", f"{es['uncertainty']}/100")
+            with st.expander("DCF Details"):
+                dc1, dc2, dc3 = st.columns(3)
+                dc1.markdown(f"**Assumptions:**\n- WACC: {dcf['discount_rate']}%\n- Terminal Growth: {dcf['terminal_growth']}%\n- Latest FCF: {fmt_num(dcf['latest_fcf'])}")
+                dc2.markdown(f"**Present Values:**\n- PV of FCFs: {fmt_num(dcf['pv_of_fcfs'])}\n- PV Terminal: {fmt_num(dcf['pv_terminal_value'])}")
+                dc3.markdown(f"**Adjustments:**\n- Cash: +{fmt_num(dcf['total_cash'])}\n- Debt: -{fmt_num(dcf['total_debt'])}\n- Equity: {fmt_num(dcf['equity_value'])}")
+                fcf_df = pd.DataFrame(dcf["projected_fcf"])
+                fcf_df.columns = ["Year", "Projected FCF", "PV of FCF"]
+                st.dataframe(fcf_df, use_container_width=True, hide_index=True)
 
-            st.divider()
+    # ---- ENTROPY RADAR TAB ----
+    with tab_radar:
+        st.subheader("Entropy Radar")
+        st.caption("Is the regime around this stock changing?")
 
-            # Price + entropy chart
-            fig = make_subplots(
-                rows=2, cols=1, shared_xaxes=True,
-                subplot_titles=(f"{tkr} Price (regime changes marked)", "Rolling Entropy (60-day)"),
-                vertical_spacing=0.08, row_heights=[0.6, 0.4],
-            )
+        es = radar["entropy_score"]
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Regime Instability", f"{es['regime_instability']}/100")
+        s2.metric("Information Flow", f"{es['information_flow']}/100")
+        s3.metric("Relationship Stress", f"{es['relationship_stress']}/100")
+        s4.metric("Uncertainty", f"{es['uncertainty']}/100")
 
-            close = prices["Close"]
+        st.divider()
+
+        # Price + entropy chart
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            subplot_titles=(f"{tkr} Price (regime changes marked)", "Rolling Entropy (60-day)"),
+            vertical_spacing=0.08, row_heights=[0.6, 0.4],
+        )
+
+        close = prices["Close"]
+        fig.add_trace(go.Scatter(
+            x=close.index, y=close.values, mode="lines",
+            name="Price", line=dict(color="#1f77b4"),
+        ), row=1, col=1)
+
+        regimes = radar["regimes"]
+        for cp_date in regimes.get("changepoint_dates", []):
+            fig.add_vline(x=cp_date, line_dash="dash", line_color="red", opacity=0.6, row=1, col=1)
+
+        roll_ent = radar.get("rolling_entropy")
+        if roll_ent is not None and len(roll_ent) > 0:
             fig.add_trace(go.Scatter(
-                x=close.index, y=close.values, mode="lines",
-                name="Price", line=dict(color="#1f77b4"),
-            ), row=1, col=1)
+                x=roll_ent.index, y=roll_ent.values, mode="lines",
+                name="Rolling Entropy", line=dict(color="#ff7f0e"),
+            ), row=2, col=1)
 
-            # Mark regime changepoints
-            regimes = radar["regimes"]
-            for cp_date in regimes.get("changepoint_dates", []):
-                fig.add_vline(x=cp_date, line_dash="dash", line_color="red", opacity=0.6, row=1, col=1)
+        fig.update_layout(height=500, template="plotly_white", showlegend=False,
+                          margin=dict(l=50, r=20, t=40, b=20))
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Entropy (nats)", row=2, col=1)
+        st.plotly_chart(fig, use_container_width=True)
 
-            roll_ent = radar.get("rolling_entropy")
-            if roll_ent is not None and len(roll_ent) > 0:
-                fig.add_trace(go.Scatter(
-                    x=roll_ent.index, y=roll_ent.values, mode="lines",
-                    name="Rolling Entropy", line=dict(color="#ff7f0e"),
-                ), row=2, col=1)
+        if regimes["regimes"]:
+            with st.expander(f"Regime Details ({regimes['n_changepoints']} changepoints)"):
+                regime_df = pd.DataFrame(regimes["regimes"])
+                regime_df.columns = ["Regime", "Start", "End", "Mean Return", "Volatility", "Days"]
+                st.dataframe(regime_df, use_container_width=True, hide_index=True)
 
-            fig.update_layout(height=500, template="plotly_white", showlegend=False,
-                              margin=dict(l=50, r=20, t=40, b=20))
-            fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-            fig.update_yaxes(title_text="Entropy (nats)", row=2, col=1)
-            st.plotly_chart(fig, use_container_width=True)
+    # ---- INFORMATION FLOW TAB ----
+    with tab_flow:
+        st.subheader("Information Flow")
+        st.caption("Who leads whom? Transfer entropy reveals directional causation.")
 
-            # Regime table
-            if regimes["regimes"]:
-                with st.expander(f"Regime Details ({regimes['n_changepoints']} changepoints)"):
-                    regime_df = pd.DataFrame(regimes["regimes"])
-                    regime_df.columns = ["Regime", "Start", "End", "Mean Return", "Volatility", "Days"]
-                    st.dataframe(regime_df, use_container_width=True, hide_index=True)
+        te_results = radar.get("transfer_entropy", [])
+        corr_results = radar.get("correlation_stability", [])
 
-        # ---- INFORMATION FLOW TAB ----
-        with tab_flow:
-            st.subheader("Information Flow")
-            st.caption("Who leads whom? Transfer entropy reveals directional causation.")
+        if te_results:
+            for te in te_results:
+                comp = te["comparison"]
+                col1, col2, col3 = st.columns([2, 2, 3])
 
-            te_results = radar.get("transfer_entropy", [])
-            corr_results = radar.get("correlation_stability", [])
+                with col1:
+                    st.metric(f"TE({tkr}→{comp})", f"{te['te_a_to_b']:.5f}")
+                with col2:
+                    st.metric(f"TE({comp}→{tkr})", f"{te['te_b_to_a']:.5f}")
+                with col3:
+                    leader = te["leader"]
+                    if "neither" in leader:
+                        st.info("Roughly symmetric information flow")
+                    elif " leads " in leader and tkr in leader.split(" leads ")[0]:
+                        st.success(f"**{tkr} leads {comp}** (net TE: {te['net_te']:.5f})")
+                    else:
+                        st.warning(f"**{comp} leads {tkr}** (net TE: {te['net_te']:.5f})")
 
-            if te_results:
-                for te in te_results:
-                    comp = te["comparison"]
-                    col1, col2, col3 = st.columns([2, 2, 3])
-
-                    with col1:
-                        st.metric(f"TE({tkr}→{comp})", f"{te['te_a_to_b']:.5f}")
-                    with col2:
-                        st.metric(f"TE({comp}→{tkr})", f"{te['te_b_to_a']:.5f}")
-                    with col3:
-                        leader = te["leader"]
-                        if "neither" in leader:
-                            st.info(f"↔️ Roughly symmetric information flow")
-                        elif tkr in leader.split(" leads ")[0] if " leads " in leader else False:
-                            st.success(f"➡️ **{tkr} leads {comp}** (net TE: {te['net_te']:.5f})")
-                        else:
-                            st.warning(f"⬅️ **{comp} leads {tkr}** (net TE: {te['net_te']:.5f})")
-
-                    st.divider()
-
-            # Correlation stability
-            if corr_results:
-                st.subheader("Correlation Health")
-                st.caption("Are the relationships this stock depends on still intact?")
-
-                for corr in corr_results:
-                    comp = corr["comparison"]
-                    rolling_data = corr.get("rolling_data")
-
-                    cc1, cc2 = st.columns([1, 2])
-                    with cc1:
-                        status = "🔴 COLLAPSED" if corr["is_collapsed"] else "🟢 INTACT"
-                        st.metric(f"{tkr} vs {comp}", status)
-                        st.caption(f"Current: {corr['current_correlation']}, Recent avg: {corr['mean_recent_correlation']}")
-
-                    with cc2:
-                        if rolling_data is not None and len(rolling_data) > 0:
-                            fig_corr = go.Figure()
-                            fig_corr.add_trace(go.Scatter(
-                                x=rolling_data.index, y=rolling_data.values,
-                                mode="lines", line=dict(color="#ff7f0e"),
-                            ))
-                            fig_corr.add_hline(y=0, line_dash="dash", line_color="gray")
-                            fig_corr.update_layout(
-                                height=200, template="plotly_white",
-                                margin=dict(l=40, r=20, t=10, b=20),
-                                yaxis_title="Correlation",
-                            )
-                            st.plotly_chart(fig_corr, use_container_width=True)
-
-                    st.divider()
-
-        # ---- DETAILS TAB ----
-        with tab_detail:
-            st.subheader("Raw Metrics")
-
-            d1, d2 = st.columns(2)
-            with d1:
-                st.markdown("**Entropy Metrics**")
-                st.write(f"- Shannon Entropy: {radar['shannon_entropy']} nats")
-                st.write(f"- Current Rolling Entropy: {radar.get('current_rolling_entropy', 'N/A')}")
-                st.write(f"- Mean Rolling Entropy: {radar.get('mean_rolling_entropy', 'N/A')}")
-                st.write(f"- Peak Entropy Date: {radar.get('max_entropy_date', 'N/A')}")
-                st.write(f"- Regime Changes: {regimes['n_changepoints']}")
-                st.write(f"- Trading Days Analyzed: {radar['n_days']}")
-
-            with d2:
-                st.markdown("**Entropy Score Breakdown**")
-                es = radar["entropy_score"]
-                st.write(f"- **Composite: {es['composite_score']}/100**")
-                st.write(f"- Regime Instability: {es['regime_instability']}/100 (30% weight)")
-                st.write(f"- Information Flow: {es['information_flow']}/100 (20% weight)")
-                st.write(f"- Relationship Stress: {es['relationship_stress']}/100 (25% weight)")
-                st.write(f"- Uncertainty: {es['uncertainty']}/100 (25% weight)")
-
-            # AI Summary
-            if client:
                 st.divider()
-                st.subheader("AI Analysis")
+
+        if corr_results:
+            st.subheader("Correlation Health")
+            st.caption("Are the relationships this stock depends on still intact?")
+
+            for corr in corr_results:
+                comp = corr["comparison"]
+                rolling_data = corr.get("rolling_data")
+
+                cc1, cc2 = st.columns([1, 2])
+                with cc1:
+                    status = "🔴 COLLAPSED" if corr["is_collapsed"] else "🟢 INTACT"
+                    st.metric(f"{tkr} vs {comp}", status)
+                    curr = corr['current_correlation']
+                    recent = corr['mean_recent_correlation']
+                    st.caption(f"Current: {curr}, Recent avg: {recent}")
+
+                with cc2:
+                    if rolling_data is not None and len(rolling_data) > 0:
+                        fig_corr = go.Figure()
+                        fig_corr.add_trace(go.Scatter(
+                            x=rolling_data.index, y=rolling_data.values,
+                            mode="lines", line=dict(color="#ff7f0e"),
+                        ))
+                        fig_corr.add_hline(y=0, line_dash="dash", line_color="gray")
+                        fig_corr.update_layout(
+                            height=200, template="plotly_white",
+                            margin=dict(l=40, r=20, t=10, b=20),
+                            yaxis_title="Correlation",
+                        )
+                        st.plotly_chart(fig_corr, use_container_width=True)
+
+                st.divider()
+
+    # ---- DETAILS TAB ----
+    with tab_detail:
+        st.subheader("Raw Metrics")
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.markdown("**Entropy Metrics**")
+            st.write(f"- Shannon Entropy: {radar['shannon_entropy']} nats")
+            st.write(f"- Current Rolling Entropy: {radar.get('current_rolling_entropy', 'N/A')}")
+            st.write(f"- Mean Rolling Entropy: {radar.get('mean_rolling_entropy', 'N/A')}")
+            st.write(f"- Peak Entropy Date: {radar.get('max_entropy_date', 'N/A')}")
+            st.write(f"- Regime Changes: {regimes['n_changepoints']}")
+            st.write(f"- Trading Days Analyzed: {radar['n_days']}")
+
+        with d2:
+            st.markdown("**Entropy Score Breakdown**")
+            es = radar["entropy_score"]
+            st.write(f"- **Composite: {es['composite_score']}/100**")
+            st.write(f"- Regime Instability: {es['regime_instability']}/100 (30% weight)")
+            st.write(f"- Information Flow: {es['information_flow']}/100 (20% weight)")
+            st.write(f"- Relationship Stress: {es['relationship_stress']}/100 (25% weight)")
+            st.write(f"- Uncertainty: {es['uncertainty']}/100 (25% weight)")
+
+        # AI Summary
+        if client:
+            st.divider()
+            st.subheader("AI Analysis")
+
+            # Cache AI analysis to avoid regenerating on every rerun
+            if "ai_analysis" not in st.session_state or st.session_state.get("ai_ticker") != tkr:
                 with st.spinner("Generating analysis..."):
                     te_summary = "; ".join([
-                        f"{te['comparison']}: {te['leader']}"
+                        "{}: {}".format(te['comparison'], te['leader'])
                         for te in radar.get("transfer_entropy", [])
                     ])
                     corr_summary = "; ".join([
@@ -376,14 +395,12 @@ Write a concise 3-4 paragraph analysis:
                             {"role": "user", "content": prompt},
                         ],
                     )
-                    st.markdown(response.choices[0].message.content)
+                    st.session_state["ai_analysis"] = response.choices[0].message.content
+                    st.session_state["ai_ticker"] = tkr
 
-    except Exception as e:
-        st.error(f"Error analyzing {tkr}: {e}")
-        import traceback
-        st.code(traceback.format_exc())
+            st.markdown(st.session_state["ai_analysis"])
 
-elif "analysis_data" not in st.session_state:
+else:
     st.title("📊 Entropy Finance")
     st.markdown("""
     **Enter a ticker and click Analyze** to get:
