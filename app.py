@@ -98,16 +98,8 @@ with st.sidebar:
         discount_rate = st.number_input("Discount Rate (WACC %)", min_value=1.0, max_value=30.0, value=10.0, step=0.5, format="%.1f") / 100
         terminal_growth = st.number_input("Terminal Growth Rate (%)", min_value=0.0, max_value=10.0, value=3.0, step=0.5, format="%.1f") / 100
 
-    st.divider()
-    st.subheader("AI Assistant")
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    chat_container = st.container(height=250)
-    with chat_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-    chat_input = st.chat_input("Ask a question...", key="chat")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # ---------------------------------------------------------------------------
 # Run analysis (compute and cache in session_state)
@@ -183,9 +175,9 @@ if "cached_analysis" in st.session_state:
     # ================================================================
     # TABS
     # ================================================================
-    tab_val, tab_radar, tab_flow, tab_backtest, tab_accuracy, tab_method, tab_detail = st.tabs([
+    tab_val, tab_radar, tab_flow, tab_backtest, tab_accuracy, tab_chat, tab_method, tab_detail = st.tabs([
         "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow",
-        "🔬 Backtest", "🎯 Accuracy", "📖 Methodology", "📋 Details",
+        "🔬 Backtest", "🎯 Accuracy", "💬 AI Chat", "📖 Methodology", "📋 Details",
     ])
 
     # ---- VALUATION TAB ----
@@ -631,13 +623,76 @@ if "cached_analysis" in st.session_state:
                                 "Our DCF is a pure quantitative model. The comparison shows whether entropy adjustment "
                                 "moves valuations in a direction consistent with market consensus.")
 
+    # ---- AI CHAT TAB ----
+    with tab_chat:
+        st.subheader("AI Entropy Analyst")
+        st.caption("Ask questions about the current stock, run custom entropy analyses, or explore cross-asset relationships.")
+
+        # Display chat history
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                safe = msg["content"].replace("$", "\\$")
+                st.markdown(safe)
+
+        # Chat input
+        chat_input = st.chat_input("e.g. 'Who leads whom between NVDA and AMD?' or 'What drives this stock's entropy score?'", key="chat")
+
+        if chat_input:
+            if not client:
+                st.warning("OpenAI API key not configured. Add it to your .env file.")
+            else:
+                st.session_state.messages.append({"role": "user", "content": chat_input})
+                with st.chat_message("user"):
+                    st.markdown(chat_input)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        context = ""
+                        if "analysis_data" in st.session_state:
+                            ad = st.session_state["analysis_data"]
+                            context = "\nCurrently analyzing: {}. Info: {}\nDCF: {}\nEntropy Radar: {}".format(
+                                ad['ticker'],
+                                json.dumps({k: v for k, v in ad['info'].items() if v is not None}, default=str),
+                                json.dumps({k: v for k, v in ad['dcf'].items() if k != 'projected_fcf'}, default=str),
+                                json.dumps(ad.get('radar', {}), default=str),
+                            )
+
+                        api_messages = [{"role": "system", "content": SYSTEM_PROMPT + context}]
+                        for m in st.session_state.messages:
+                            api_messages.append({"role": m["role"], "content": m["content"]})
+
+                        response = client.chat.completions.create(
+                            model="gpt-4o-mini", messages=api_messages,
+                            tools=TOOL_DEFINITIONS, tool_choice="auto",
+                        )
+                        message = response.choices[0].message
+
+                        # Handle tool calls
+                        while message.tool_calls:
+                            api_messages.append({
+                                "role": "assistant", "content": message.content,
+                                "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in message.tool_calls]
+                            })
+                            for tc in message.tool_calls:
+                                result = execute_chat_tool(tc.function.name, json.loads(tc.function.arguments))
+                                api_messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                            response = client.chat.completions.create(
+                                model="gpt-4o-mini", messages=api_messages,
+                                tools=TOOL_DEFINITIONS, tool_choice="auto",
+                            )
+                            message = response.choices[0].message
+
+                        reply = message.content or "Analysis complete."
+                        st.session_state.messages.append({"role": "assistant", "content": reply})
+                        safe_reply = reply.replace("$", "\\$")
+                        st.markdown(safe_reply)
+
     # ---- METHODOLOGY TAB ----
     with tab_method:
         st.subheader("Methodology")
         st.caption("How this tool works and why it works this way.")
 
-        st.markdown("""
-### Overview
+        st.markdown("""### Overview
 
 This tool combines **traditional valuation** (DCF, financial ratios) with an **entropy intelligence layer** built on information theory. The core thesis: traditional metrics tell you what a stock is worth *today*, but entropy tells you whether the *regime* around that stock is changing — and therefore whether today's valuation assumptions will hold tomorrow.
 
@@ -647,11 +702,11 @@ This tool combines **traditional valuation** (DCF, financial ratios) with an **e
 
 **What:** Measures the disorder/uncertainty in a stock's return distribution.
 
-**How:** Returns are discretized into histogram bins, then Shannon entropy is computed:
+**How:** Returns are discretized into histogram bins, then Shannon entropy is computed:""")
 
-H(X) = -sum( p(x) * log(p(x)) )
+        st.latex(r"H(X) = -\sum_{x} p(x) \cdot \ln(p(x))")
 
-Higher entropy means returns are spread across many bins (unpredictable). Lower entropy means returns are concentrated (predictable).
+        st.markdown("""Higher entropy means returns are spread across many bins (unpredictable). Lower entropy means returns are concentrated (predictable).
 
 **Why it matters:** A stock with high Shannon entropy has a wider range of possible outcomes. This should be reflected in the discount rate.
 
@@ -663,11 +718,11 @@ Higher entropy means returns are spread across many bins (unpredictable). Lower 
 
 **What:** Measures how much knowing Asset X's past reduces uncertainty about Asset Y's future — beyond what Y's own past tells you.
 
-**How:**
+**How:**""")
 
-TE(X->Y) = H(Y_future | Y_past) - H(Y_future | Y_past, X_past)
+        st.latex(r"TE(X \rightarrow Y) = H(Y_t \mid Y_{t-1}) - H(Y_t \mid Y_{t-1}, X_{t-\text{lag}})")
 
-Computed by discretizing returns, building joint probability distributions, and measuring conditional entropy reduction.
+        st.markdown("""Computed by discretizing returns, building joint probability distributions, and measuring conditional entropy reduction.
 
 **Why it matters:** Correlation tells you assets move together. Transfer entropy tells you *who leads and who follows*. If SPY leads a stock (high TE from SPY to stock), the stock is a market follower. If the stock leads SPY, it may be a market driver.
 
@@ -707,10 +762,10 @@ Computed by discretizing returns, building joint probability distributions, and 
 
 | Component | Weight | Scoring Method |
 |-----------|--------|----------------|
-| Regime Instability | 30% | 20 points per changepoint + recency bonus (30 pts if <30 days, 15 pts if <60 days) |
-| Relationship Stress | 25% | (1 - abs(correlation)) * 60; collapsed = 80 |
-| Uncertainty | 25% | (Shannon entropy - 2.0) / 2.0 * 100, capped at 0-100 |
-| Information Flow | 20% | abs(net transfer entropy) * 5000, capped at 100 |
+| Regime Instability | 30% | 20 points per changepoint + recency bonus |
+| Relationship Stress | 25% | (1 - abs(correlation)) x 60; collapsed = 80 |
+| Uncertainty | 25% | Normalized Shannon entropy, capped at 0-100 |
+| Information Flow | 20% | abs(net transfer entropy) x 5000, capped at 100 |
 
 **Interpretation:**
 - **>70:** HIGH — Rules are actively changing. Structural break risk.
@@ -724,11 +779,11 @@ Computed by discretizing returns, building joint probability distributions, and 
 
 **What:** Modifies the traditional DCF discount rate based on the entropy score.
 
-**How:**
+**How:**""")
 
-adjusted_WACC = base_WACC + (entropy_score / 100)^0.7 * max_premium
+        st.latex(r"\text{Adjusted WACC} = \text{Base WACC} + \left(\frac{\text{Entropy Score}}{100}\right)^{0.7} \times \text{Max Premium}")
 
-The exponent 0.7 creates a concave curve — moderate entropy (30-60) has meaningful impact, while the marginal effect diminishes at extreme scores. Default max premium is 6%.
+        st.markdown("""The exponent 0.7 creates a concave curve — moderate entropy (30-60) has meaningful impact, while the marginal effect diminishes at extreme scores. Default max premium is 6%.
 
 **Why it matters:** A stock in a high-entropy regime faces more uncertainty about future cash flows. The discount rate should reflect this. A stable regime (low entropy) means the base WACC is appropriate. A disrupted regime (high entropy) demands a higher discount rate.
 
@@ -754,7 +809,7 @@ The exponent 0.7 creates a concave curve — moderate entropy (30-60) has meanin
 
 ---
 
-### Data Sources & Limitations
+### Data Sources and Limitations
 
 | Source | What | Limitations |
 |--------|------|-------------|
@@ -862,39 +917,3 @@ else:
     - Information flow — who leads whom?
     - Correlation health — are relationships breaking?
     """)
-
-# ---------------------------------------------------------------------------
-# Chat handler
-# ---------------------------------------------------------------------------
-if chat_input and client:
-    st.session_state.messages.append({"role": "user", "content": chat_input})
-
-    context = ""
-    if "analysis_data" in st.session_state:
-        ad = st.session_state["analysis_data"]
-        context = f"\nCurrently analyzing: {ad['ticker']}. Info: {json.dumps({k: v for k, v in ad['info'].items() if v is not None}, default=str)}\nDCF: {json.dumps({k: v for k, v in ad['dcf'].items() if k != 'projected_fcf'}, default=str)}\nEntropy Radar: {json.dumps(ad.get('radar', {}), default=str)}"
-
-    api_messages = [{"role": "system", "content": SYSTEM_PROMPT + context}]
-    for msg in st.session_state.messages:
-        api_messages.append({"role": msg["role"], "content": msg["content"]})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini", messages=api_messages,
-        tools=TOOL_DEFINITIONS, tool_choice="auto",
-    )
-    message = response.choices[0].message
-
-    while message.tool_calls:
-        api_messages.append({
-            "role": "assistant", "content": message.content,
-            "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in message.tool_calls]
-        })
-        for tc in message.tool_calls:
-            result = execute_chat_tool(tc.function.name, json.loads(tc.function.arguments))
-            api_messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        response = client.chat.completions.create(model="gpt-4o-mini", messages=api_messages, tools=TOOL_DEFINITIONS, tool_choice="auto")
-        message = response.choices[0].message
-
-    content = message.content or "Analysis complete."
-    st.session_state.messages.append({"role": "assistant", "content": content})
-    st.rerun()
