@@ -798,6 +798,104 @@ if "cached_analysis" in st.session_state:
             else:
                 st.warning(f"Only **{mc['pct_undervalued']:.1f}%** of scenarios suggest undervaluation. The majority of simulated intrinsic values fall below the current price, indicating the stock may be overvalued on fundamentals.")
 
+        # ---- RECOMMENDATION / CONCLUSION ----
+        st.divider()
+        st.subheader("Recommendation")
+
+        # Gather all available signals
+        signals = []
+        signal_score = 0  # -100 to +100 scale
+
+        # 1. DCF verdict
+        if "error" not in dcf:
+            if dcf["upside_pct"] > 15:
+                signals.append(("Standard DCF suggests **undervalued** with {:.1f}% upside.".format(dcf["upside_pct"]), 1))
+                signal_score += 20
+            elif dcf["upside_pct"] < -15:
+                signals.append(("Standard DCF suggests **overvalued** with {:.1f}% downside.".format(dcf["upside_pct"]), -1))
+                signal_score -= 20
+            else:
+                signals.append(("Standard DCF suggests **fairly valued** ({:+.1f}%).".format(dcf["upside_pct"]), 0))
+
+        # 2. Entropy-adjusted DCF
+        if "error" not in dcf_adjusted:
+            if dcf_adjusted["upside_pct"] > 15:
+                signals.append(("Entropy-adjusted DCF (accounting for regime risk) also shows upside of {:.1f}%.".format(dcf_adjusted["upside_pct"]), 1))
+                signal_score += 15
+            elif dcf_adjusted["upside_pct"] < -15:
+                signals.append(("Entropy-adjusted DCF shows {:.1f}% downside after adding regime risk premium.".format(dcf_adjusted["upside_pct"]), -1))
+                signal_score -= 15
+            else:
+                signals.append(("Entropy-adjusted DCF shows fair value ({:+.1f}%) after risk premium.".format(dcf_adjusted["upside_pct"]), 0))
+
+        # 3. Entropy score
+        es = radar["entropy_score"]
+        if es["composite_score"] > 70:
+            signals.append(("Entropy score of **{}/100 (HIGH)** — the regime around this stock is actively shifting. High uncertainty warrants caution regardless of valuation.".format(es["composite_score"]), -1))
+            signal_score -= 20
+        elif es["composite_score"] > 45:
+            signals.append(("Entropy score of **{}/100 (MODERATE)** — some unusual dynamics detected. Monitor for regime transition.".format(es["composite_score"]), 0))
+            signal_score -= 5
+        elif es["composite_score"] > 25:
+            signals.append(("Entropy score of **{}/100 (LOW)** — stable regime. Valuation assumptions are more likely to hold.".format(es["composite_score"]), 1))
+            signal_score += 10
+        else:
+            signals.append(("Entropy score of **{}/100 (VERY LOW)** — highly predictable regime. Strong foundation for valuation-based decisions.".format(es["composite_score"]), 1))
+            signal_score += 15
+
+        # 4. Monte Carlo if available
+        mc = st.session_state.get("mc_results")
+        if mc and mc.get("ticker") == tkr:
+            pct = mc["pct_undervalued"]
+            if pct > 60:
+                signals.append(("Monte Carlo simulation: **{:.1f}%** of 1,500 scenarios suggest undervaluation — strong probabilistic support for upside.".format(pct), 1))
+                signal_score += 20
+            elif pct > 40:
+                signals.append(("Monte Carlo simulation: **{:.1f}%** of scenarios suggest undervaluation — the stock is near fair value probabilistically.".format(pct), 0))
+            else:
+                signals.append(("Monte Carlo simulation: only **{:.1f}%** of scenarios suggest undervaluation — the majority of assumptions point to overvaluation.".format(pct), -1))
+                signal_score -= 15
+
+        # 5. Peer ranking
+        if peers.get("peers") and peers.get("target"):
+            target = peers["target"]
+            peer_list = peers["peers"]
+            all_pe = [p.get("pe_ratio") for p in [target] + peer_list if p.get("pe_ratio") is not None]
+            if all_pe and target.get("pe_ratio") is not None:
+                pe_rank = sorted(all_pe).index(target["pe_ratio"]) + 1
+                if pe_rank <= 2:
+                    signals.append(("Trades at a **lower P/E** than most peers — potentially cheaper relative to comparable companies.", 1))
+                    signal_score += 5
+                elif pe_rank >= len(all_pe) - 1:
+                    signals.append(("Trades at a **higher P/E** than most peers — premium valuation relative to comparables.", -1))
+                    signal_score -= 5
+
+        # Build recommendation
+        for text, _ in signals:
+            st.markdown(f"- {text}")
+
+        st.markdown("---")
+
+        # Overall verdict
+        if signal_score > 20:
+            verdict_text = "BUY / UNDERVALUED"
+            verdict_detail = "Multiple signals converge on undervaluation. The DCF models suggest intrinsic value above current price, the entropy regime is supportive, and the risk-reward profile is favorable."
+            st.success(f"**Overall: {verdict_text}**\n\n{verdict_detail}")
+        elif signal_score > 0:
+            verdict_text = "HOLD / FAIRLY VALUED"
+            verdict_detail = "Signals are mixed but lean slightly positive. The stock appears near fair value with some potential upside, but not enough margin of safety for a strong conviction buy."
+            st.info(f"**Overall: {verdict_text}**\n\n{verdict_detail}")
+        elif signal_score > -20:
+            verdict_text = "HOLD / MONITOR"
+            verdict_detail = "Signals are mixed with a slight bearish lean. Valuation appears stretched or the entropy regime introduces uncertainty that tempers confidence. Monitor for improvement in fundamentals or regime stabilization."
+            st.info(f"**Overall: {verdict_text}**\n\n{verdict_detail}")
+        else:
+            verdict_text = "CAUTION / OVERVALUED"
+            verdict_detail = "Multiple signals point to overvaluation or elevated regime risk. The current price appears above what fundamentals support across most scenarios. Consider waiting for a better entry point or reduced entropy."
+            st.warning(f"**Overall: {verdict_text}**\n\n{verdict_detail}")
+
+        st.caption("This recommendation is generated algorithmically based on DCF, entropy analysis, Monte Carlo simulation, and peer comparison. It is not financial advice.")
+
     # ---- ENTROPY RADAR TAB ----
     with tab_radar:
         st.subheader("Entropy Radar")
@@ -1246,11 +1344,28 @@ if "cached_analysis" in st.session_state:
         st.subheader("AI Entropy Analyst")
         st.caption("Ask questions about the current stock, run custom entropy analyses, or explore cross-asset relationships.")
 
+        def render_chat_content(text):
+            """Render chat text, handling LaTeX blocks and loose dollar signs."""
+            import re
+            # Extract LaTeX blocks ($$...$$) and inline math ($...$) first
+            parts = re.split(r'(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)', text)
+            for part in parts:
+                if part.startswith("$$") and part.endswith("$$"):
+                    # Display block LaTeX
+                    st.latex(part.strip("$").strip())
+                elif part.startswith("$") and part.endswith("$") and len(part) > 2:
+                    # Inline LaTeX — render as block since st.markdown can mangle it
+                    st.latex(part.strip("$").strip())
+                else:
+                    # Regular text — escape any stray dollar signs
+                    safe = part.replace("$", "\\$")
+                    if safe.strip():
+                        st.markdown(safe)
+
         # Display chat history
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                safe = msg["content"].replace("$", "\\$")
-                st.markdown(safe)
+                render_chat_content(msg["content"])
 
         # Chat input
         chat_input = st.chat_input("e.g. 'Who leads whom between NVDA and AMD?' or 'What drives this stock's entropy score?'", key="chat")
@@ -1302,8 +1417,7 @@ if "cached_analysis" in st.session_state:
 
                         reply = message.content or "Analysis complete."
                         st.session_state.messages.append({"role": "assistant", "content": reply})
-                        safe_reply = reply.replace("$", "\\$")
-                        st.markdown(safe_reply)
+                        render_chat_content(reply)
 
     # ---- METHODOLOGY TAB ----
     with tab_method:
