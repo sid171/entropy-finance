@@ -58,6 +58,52 @@ def get_financial_statements(ticker: str) -> dict:
     }
 
 
+def entropy_adjusted_wacc(base_wacc: float, entropy_score: float,
+                          max_premium: float = 0.06) -> dict:
+    """Adjust WACC using the entropy score as a risk premium.
+
+    The insight: traditional DCF uses a static discount rate, but entropy
+    tells us how much the regime is changing. A stock in a high-entropy
+    regime carries more uncertainty, so the discount rate should be higher.
+
+    Formula: adjusted_wacc = base_wacc + (entropy_score / 100) * max_premium
+
+    At entropy=0 (perfectly stable), no premium added.
+    At entropy=100 (maximum disruption), full premium (e.g., +6%) added.
+
+    Args:
+        base_wacc: Base weighted average cost of capital.
+        entropy_score: Composite entropy score (0-100).
+        max_premium: Maximum additional risk premium at entropy=100.
+
+    Returns:
+        Dict with adjusted WACC, premium applied, and explanation.
+    """
+    # Non-linear scaling: use sqrt to make moderate entropy more impactful
+    # than a pure linear mapping (most stocks cluster in 20-60 range)
+    normalized = min(1.0, max(0.0, entropy_score / 100))
+    premium = normalized ** 0.7 * max_premium  # concave curve
+
+    adjusted = base_wacc + premium
+
+    if entropy_score > 70:
+        rationale = "High entropy regime — significant risk premium applied. The rules around this asset are actively changing."
+    elif entropy_score > 45:
+        rationale = "Moderate entropy — meaningful risk premium. Some unusual dynamics warrant caution."
+    elif entropy_score > 25:
+        rationale = "Low entropy — minor risk premium. Stable regime supports base discount rate."
+    else:
+        rationale = "Very low entropy — minimal premium. Highly predictable regime."
+
+    return {
+        "base_wacc": round(base_wacc * 100, 2),
+        "entropy_premium": round(premium * 100, 2),
+        "adjusted_wacc": round(adjusted * 100, 2),
+        "entropy_score": round(entropy_score, 1),
+        "rationale": rationale,
+    }
+
+
 def compute_dcf(ticker: str, discount_rate: float = 0.10,
                 terminal_growth: float = 0.03,
                 projection_years: int = 5) -> dict:

@@ -17,8 +17,9 @@ import numpy as np
 from config import SYSTEM_PROMPT, TOOL_DEFINITIONS
 from market_data import get_returns, get_price_data
 from entropy_tools import shannon_entropy, net_transfer_entropy, rolling_entropy, detect_regimes, correlation_stability
-from valuation import get_company_info, compute_dcf
+from valuation import get_company_info, compute_dcf, entropy_adjusted_wacc
 from entropy_radar import run_entropy_radar
+from backtest import backtest_entropy_signals
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -119,10 +120,19 @@ if analyze_btn or "cached_analysis" not in st.session_state:
             prices = get_price_data(tkr, period)
             radar = run_entropy_radar(tkr, info.get("sector", ""), period)
 
+        # Entropy-adjusted DCF
+        es_score = radar["entropy_score"]["composite_score"]
+        wacc_adj = entropy_adjusted_wacc(discount_rate, es_score)
+        dcf_adjusted = compute_dcf(tkr,
+                                    discount_rate=wacc_adj["adjusted_wacc"] / 100,
+                                    terminal_growth=terminal_growth)
+
         # Cache everything for re-rendering
         st.session_state["cached_analysis"] = {
             "info": info,
             "dcf": dcf,
+            "dcf_adjusted": dcf_adjusted,
+            "wacc_adj": wacc_adj,
             "prices": prices,
             "radar": radar,
             "ticker": tkr,
@@ -148,6 +158,8 @@ if "cached_analysis" in st.session_state:
     cached = st.session_state["cached_analysis"]
     info = cached["info"]
     dcf = cached["dcf"]
+    dcf_adjusted = cached["dcf_adjusted"]
+    wacc_adj = cached["wacc_adj"]
     prices = cached["prices"]
     radar = cached["radar"]
     tkr = cached["ticker"]
@@ -170,8 +182,8 @@ if "cached_analysis" in st.session_state:
     # ================================================================
     # TABS
     # ================================================================
-    tab_val, tab_radar, tab_flow, tab_detail = st.tabs([
-        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "📋 Details"
+    tab_val, tab_radar, tab_flow, tab_backtest, tab_detail = st.tabs([
+        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "🔬 Backtest", "📋 Details"
     ])
 
     # ---- VALUATION TAB ----
@@ -194,26 +206,50 @@ if "cached_analysis" in st.session_state:
 
         st.divider()
 
-        # DCF
+        # DCF — Standard vs Entropy-Adjusted side by side
         st.subheader("DCF Valuation")
         if "error" in dcf:
             st.warning(f"DCF: {dcf['error']}")
             if "note" in dcf:
                 st.info(dcf["note"])
         else:
-            v1, v2, v3, v4 = st.columns(4)
-            delta_color = "normal" if dcf["upside_pct"] > 0 else "inverse"
-            v1.metric("Intrinsic Value", f"${dcf['intrinsic_value']:.2f}",
-                      delta=f"{dcf['upside_pct']:+.1f}%", delta_color=delta_color)
-            v2.metric("Current Price", f"${dcf['current_price']:.2f}")
-            v3.metric("Verdict", dcf["verdict"])
-            v4.metric("FCF Growth", f"{dcf['fcf_growth_rate']}%")
+            st.markdown("**Standard DCF vs Entropy-Adjusted DCF**")
+            st.caption("The entropy-adjusted DCF adds a risk premium to the discount rate based on how unstable the regime is.")
 
-            with st.expander("DCF Details"):
+            col_std, col_adj = st.columns(2)
+
+            with col_std:
+                st.markdown("##### Standard DCF")
+                delta_color = "normal" if dcf["upside_pct"] > 0 else "inverse"
+                st.metric("Intrinsic Value", f"${dcf['intrinsic_value']:.2f}",
+                          delta=f"{dcf['upside_pct']:+.1f}%", delta_color=delta_color)
+                st.metric("WACC", f"{dcf['discount_rate']}%")
+                st.metric("Verdict", dcf["verdict"])
+
+            with col_adj:
+                st.markdown("##### Entropy-Adjusted DCF")
+                if "error" in dcf_adjusted:
+                    st.warning(dcf_adjusted["error"])
+                else:
+                    adj_delta_color = "normal" if dcf_adjusted["upside_pct"] > 0 else "inverse"
+                    st.metric("Intrinsic Value", f"${dcf_adjusted['intrinsic_value']:.2f}",
+                              delta=f"{dcf_adjusted['upside_pct']:+.1f}%", delta_color=adj_delta_color)
+                    st.metric("Adjusted WACC",
+                              f"{wacc_adj['adjusted_wacc']}%",
+                              delta=f"+{wacc_adj['entropy_premium']}% entropy premium")
+                    st.metric("Verdict", dcf_adjusted["verdict"])
+
+            st.info(f"**Entropy Risk Premium:** {wacc_adj['rationale']} "
+                    f"(Score: {wacc_adj['entropy_score']}/100 → +{wacc_adj['entropy_premium']}% added to WACC)")
+
+            with st.expander("DCF Assumptions & Details"):
                 dc1, dc2, dc3 = st.columns(3)
-                dc1.markdown(f"**Assumptions:**\n- WACC: {dcf['discount_rate']}%\n- Terminal Growth: {dcf['terminal_growth']}%\n- Latest FCF: {fmt_num(dcf['latest_fcf'])}")
-                dc2.markdown(f"**Present Values:**\n- PV of FCFs: {fmt_num(dcf['pv_of_fcfs'])}\n- PV Terminal: {fmt_num(dcf['pv_terminal_value'])}")
-                dc3.markdown(f"**Adjustments:**\n- Cash: +{fmt_num(dcf['total_cash'])}\n- Debt: -{fmt_num(dcf['total_debt'])}\n- Equity: {fmt_num(dcf['equity_value'])}")
+                dc1.markdown(f"**Inputs:**\n- Base WACC: {dcf['discount_rate']}%\n- Entropy Premium: +{wacc_adj['entropy_premium']}%\n- Adjusted WACC: {wacc_adj['adjusted_wacc']}%\n- Terminal Growth: {dcf['terminal_growth']}%")
+                dc2.markdown(f"**Standard DCF:**\n- PV of FCFs: {fmt_num(dcf['pv_of_fcfs'])}\n- PV Terminal: {fmt_num(dcf['pv_terminal_value'])}\n- Equity Value: {fmt_num(dcf['equity_value'])}")
+                if "error" not in dcf_adjusted:
+                    dc3.markdown(f"**Entropy-Adjusted DCF:**\n- PV of FCFs: {fmt_num(dcf_adjusted['pv_of_fcfs'])}\n- PV Terminal: {fmt_num(dcf_adjusted['pv_terminal_value'])}\n- Equity Value: {fmt_num(dcf_adjusted['equity_value'])}")
+                else:
+                    dc3.markdown(f"**Entropy-Adjusted DCF:**\n- {dcf_adjusted['error']}")
                 fcf_df = pd.DataFrame(dcf["projected_fcf"])
                 fcf_df.columns = ["Year", "Projected FCF", "PV of FCF"]
                 st.dataframe(fcf_df, use_container_width=True, hide_index=True)
@@ -329,6 +365,128 @@ if "cached_analysis" in st.session_state:
 
                 st.divider()
 
+    # ---- BACKTEST TAB ----
+    with tab_backtest:
+        st.subheader("Entropy Signal Backtest")
+        st.caption("When entropy spikes, what happens to forward returns? Testing if entropy predicts drawdowns.")
+
+        bt_col1, bt_col2 = st.columns([1, 3])
+        with bt_col1:
+            bt_period = st.selectbox("Backtest Period", ["2y", "5y", "10y"], index=1, key="bt_period")
+            bt_threshold = st.slider("Signal Threshold (std devs)", 0.5, 2.5, 1.0, 0.25, key="bt_thresh")
+            run_bt = st.button("Run Backtest", type="primary", use_container_width=True)
+
+        if run_bt or "backtest_data" in st.session_state:
+            if run_bt:
+                with st.spinner("Running backtest..."):
+                    bt_data = backtest_entropy_signals(
+                        tkr, period=bt_period,
+                        threshold_std=bt_threshold,
+                    )
+                    st.session_state["backtest_data"] = bt_data
+                    st.session_state["bt_ticker"] = tkr
+
+            bt = st.session_state.get("backtest_data", {})
+            if "error" in bt:
+                st.warning(bt["error"])
+            elif bt.get("n_signals", 0) == 0:
+                st.info("No high-entropy signals detected in this period. Try lowering the threshold.")
+            else:
+                # Summary metrics
+                with bt_col2:
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Signals Found", bt["n_signals"])
+                    m2.metric("Trading Days", bt["n_trading_days"])
+                    m3.metric("Entropy Threshold", f"{bt['threshold']:.3f}")
+                    m4.metric("Signal Rate", f"{bt['n_signals'] / (bt['n_trading_days'] / 252):.1f}/year")
+
+                # Signal vs Baseline comparison table
+                st.markdown("#### Signal Returns vs Baseline")
+                st.caption("Does high entropy predict worse forward returns than the unconditional average?")
+
+                comparison_rows = []
+                for horizon in ["30d", "60d", "90d"]:
+                    sig = bt["signal_stats"].get(horizon, {})
+                    base = bt["baseline_stats"].get(horizon, {})
+                    if sig and base:
+                        edge = sig["mean_return"] - base["mean_return"]
+                        comparison_rows.append({
+                            "Horizon": horizon,
+                            "Signal Avg Return": f"{sig['mean_return']:+.2f}%",
+                            "Baseline Avg Return": f"{base['mean_return']:+.2f}%",
+                            "Edge": f"{edge:+.2f}%",
+                            "Signal Hit Rate (neg)": f"{sig['hit_rate_negative']:.0f}%",
+                            "Baseline Hit Rate (neg)": f"{base['hit_rate_negative']:.0f}%",
+                            "Worst Signal": f"{sig['worst']:+.2f}%",
+                            "Best Signal": f"{sig['best']:+.2f}%",
+                            "N": sig["n_signals"],
+                        })
+
+                if comparison_rows:
+                    st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True)
+
+                # Chart: price with signal markers + entropy
+                fig_bt = make_subplots(
+                    rows=2, cols=1, shared_xaxes=True,
+                    subplot_titles=(f"{tkr} Price with High-Entropy Signals", "Rolling Entropy"),
+                    vertical_spacing=0.08, row_heights=[0.6, 0.4],
+                )
+
+                bt_close = bt["close_prices"]
+                bt_roll = bt["rolling_entropy"]
+
+                fig_bt.add_trace(go.Scatter(
+                    x=bt_close.index, y=bt_close.values, mode="lines",
+                    name="Price", line=dict(color="#1f77b4"),
+                ), row=1, col=1)
+
+                # Mark signal dates on price chart
+                signal_dates = bt["signal_dates"]
+                signal_prices = [float(bt_close.loc[d]) for d in signal_dates if d in bt_close.index]
+                signal_x = [d for d in signal_dates if d in bt_close.index]
+                fig_bt.add_trace(go.Scatter(
+                    x=signal_x, y=signal_prices, mode="markers",
+                    name="High Entropy Signal",
+                    marker=dict(color="red", size=10, symbol="triangle-down"),
+                ), row=1, col=1)
+
+                # Entropy with threshold line
+                fig_bt.add_trace(go.Scatter(
+                    x=bt_roll.index, y=bt_roll.values, mode="lines",
+                    name="Rolling Entropy", line=dict(color="#ff7f0e"),
+                ), row=2, col=1)
+                fig_bt.add_hline(y=bt["threshold"], line_dash="dash",
+                                 line_color="red", opacity=0.7, row=2, col=1,
+                                 annotation_text="Signal Threshold")
+
+                fig_bt.update_layout(height=550, template="plotly_white",
+                                     margin=dict(l=50, r=20, t=40, b=20))
+                fig_bt.update_yaxes(title_text="Price ($)", row=1, col=1)
+                fig_bt.update_yaxes(title_text="Entropy (nats)", row=2, col=1)
+                st.plotly_chart(fig_bt, use_container_width=True)
+
+                # Individual signal table
+                with st.expander(f"All Signals ({bt['n_signals']})"):
+                    sig_df = pd.DataFrame(bt["signals"])
+                    display_cols = ["date", "entropy", "price_at_signal"]
+                    for d in [30, 60, 90]:
+                        col_name = f"return_{d}d"
+                        if col_name in sig_df.columns:
+                            display_cols.append(col_name)
+                    st.dataframe(sig_df[display_cols], use_container_width=True, hide_index=True)
+        else:
+            st.markdown("""
+            **How this works:**
+            1. Computes rolling Shannon entropy over the full history
+            2. Flags dates where entropy exceeds the threshold (mean + N standard deviations)
+            3. Measures what happens to the stock price 30, 60, and 90 days after each signal
+            4. Compares signal returns against the unconditional baseline
+
+            **If high entropy is predictive**, signal returns should be worse than baseline returns.
+
+            Click **Run Backtest** to test the thesis.
+            """)
+
     # ---- DETAILS TAB ----
     with tab_detail:
         st.subheader("Raw Metrics")
@@ -398,7 +556,9 @@ Write a concise 3-4 paragraph analysis:
                     st.session_state["ai_analysis"] = response.choices[0].message.content
                     st.session_state["ai_ticker"] = tkr
 
-            st.markdown(st.session_state["ai_analysis"])
+            # Escape $ signs so Streamlit doesn't render them as LaTeX
+            safe_text = st.session_state["ai_analysis"].replace("$", "\\$")
+            st.markdown(safe_text)
 
 else:
     st.title("📊 Entropy Finance")
