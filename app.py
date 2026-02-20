@@ -758,15 +758,18 @@ This tool combines **traditional valuation** (DCF, financial ratios) with an **e
 
 **What:** Synthesizes the four entropy dimensions into a single actionable score.
 
-**How:** Weighted average of four component scores:
+**How:** Weighted average of four component scores:""")
 
-| Component | Weight | Scoring Method |
-|-----------|--------|----------------|
-| Regime Instability | 30% | 20 points per changepoint + recency bonus |
-| Relationship Stress | 25% | (1 - abs(correlation)) x 60; collapsed = 80 |
-| Uncertainty | 25% | Normalized Shannon entropy, capped at 0-100 |
-| Information Flow | 20% | abs(net transfer entropy) x 5000, capped at 100 |
+        st.latex(r"S_{\text{composite}} = 0.30 \cdot S_{\text{regime}} + 0.25 \cdot S_{\text{stress}} + 0.25 \cdot S_{\text{uncertainty}} + 0.20 \cdot S_{\text{flow}}")
 
+        st.markdown("Each component is scored 0-100:")
+
+        st.latex(r"S_{\text{regime}} = \min\!\bigl(100,\; 20 \times n_{\text{changepoints}} + \text{recency bonus}\bigr)")
+        st.latex(r"S_{\text{stress}} = \begin{cases} 80 & \text{if correlation collapsed} \\ (1 - |\bar{\rho}_{\text{recent}}|) \times 60 & \text{otherwise} \end{cases}")
+        st.latex(r"S_{\text{uncertainty}} = \min\!\left(100,\; \frac{H - 2.0}{2.0} \times 100\right)")
+        st.latex(r"S_{\text{flow}} = \min\!\bigl(100,\; |TE_{\text{net}}| \times 5000\bigr)")
+
+        st.markdown("""
 **Interpretation:**
 - **>70:** HIGH — Rules are actively changing. Structural break risk.
 - **45-70:** MODERATE — Unusual dynamics detected. Monitor closely.
