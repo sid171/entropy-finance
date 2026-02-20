@@ -50,8 +50,8 @@ Five frameworks from information theory applied to financial markets:
 ### Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/entropy-finance-app.git
-cd entropy-finance-app
+git clone https://github.com/sid171/entropy-finance.git
+cd entropy-finance
 pip install -r requirements.txt
 ```
 
