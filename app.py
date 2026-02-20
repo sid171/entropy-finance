@@ -20,6 +20,7 @@ from entropy_tools import shannon_entropy, net_transfer_entropy, rolling_entropy
 from valuation import get_company_info, compute_dcf, entropy_adjusted_wacc
 from entropy_radar import run_entropy_radar
 from backtest import backtest_entropy_signals
+from accuracy import run_cross_stock_backtest, run_analyst_comparison
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -94,8 +95,8 @@ with st.sidebar:
     analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
 
     with st.expander("DCF Parameters"):
-        discount_rate = st.slider("Discount Rate (WACC)", 0.06, 0.15, 0.10, 0.01)
-        terminal_growth = st.slider("Terminal Growth", 0.01, 0.05, 0.03, 0.005)
+        discount_rate = st.number_input("Discount Rate (WACC %)", min_value=1.0, max_value=30.0, value=10.0, step=0.5, format="%.1f") / 100
+        terminal_growth = st.number_input("Terminal Growth Rate (%)", min_value=0.0, max_value=10.0, value=3.0, step=0.5, format="%.1f") / 100
 
     st.divider()
     st.subheader("AI Assistant")
@@ -182,8 +183,9 @@ if "cached_analysis" in st.session_state:
     # ================================================================
     # TABS
     # ================================================================
-    tab_val, tab_radar, tab_flow, tab_backtest, tab_detail = st.tabs([
-        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "🔬 Backtest", "📋 Details"
+    tab_val, tab_radar, tab_flow, tab_backtest, tab_accuracy, tab_method, tab_detail = st.tabs([
+        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow",
+        "🔬 Backtest", "🎯 Accuracy", "📖 Methodology", "📋 Details",
     ])
 
     # ---- VALUATION TAB ----
@@ -486,6 +488,297 @@ if "cached_analysis" in st.session_state:
 
             Click **Run Backtest** to test the thesis.
             """)
+
+    # ---- ACCURACY TAB ----
+    with tab_accuracy:
+        st.subheader("Accuracy Testing")
+        st.caption("Validate the entropy framework across multiple stocks and against analyst consensus.")
+
+        acc_test = st.selectbox("Select Test", [
+            "Cross-Stock Signal Validation",
+            "Analyst Target Comparison",
+        ], key="acc_test")
+
+        acc_col1, acc_col2 = st.columns([1, 3])
+
+        if acc_test == "Cross-Stock Signal Validation":
+            with acc_col1:
+                custom_tickers = st.text_area(
+                    "Test Universe (one per line)",
+                    value="AAPL\nMSFT\nNVDA\nJPM\nGS\nJNJ\nXOM\nAMZN\nTSLA\nMETA",
+                    height=200, key="acc_tickers"
+                )
+                acc_period = st.selectbox("Period", ["2y", "5y"], index=1, key="acc_period")
+                acc_thresh = st.number_input("Threshold (std devs)", min_value=0.5, max_value=3.0, value=1.0, step=0.25, key="acc_thresh")
+                run_acc = st.button("Run Validation", type="primary", use_container_width=True, key="run_acc")
+
+            if run_acc or "cross_stock_results" in st.session_state:
+                if run_acc:
+                    ticker_list = [t.strip().upper() for t in custom_tickers.strip().split("\n") if t.strip()]
+                    with st.spinner(f"Backtesting {len(ticker_list)} stocks... (this may take a minute)"):
+                        cross_results = run_cross_stock_backtest(
+                            tickers=ticker_list, period=acc_period,
+                            threshold_std=acc_thresh,
+                        )
+                        st.session_state["cross_stock_results"] = cross_results
+
+                cr = st.session_state.get("cross_stock_results", {})
+                if "error" in cr:
+                    st.warning(cr["error"])
+                else:
+                    with acc_col2:
+                        st.markdown("#### Aggregate Results")
+                        st.caption(f"Tested {cr['n_stocks']} stocks | {cr['n_errors']} errors")
+
+                    # Aggregate stats per horizon
+                    agg_rows = []
+                    for horizon in ["30d", "60d", "90d"]:
+                        agg = cr["aggregate"].get(horizon, {})
+                        if agg:
+                            agg_rows.append({
+                                "Horizon": horizon,
+                                "Mean Edge": f"{agg['mean_edge']:+.2f}%",
+                                "Median Edge": f"{agg['median_edge']:+.2f}%",
+                                "Stocks Confirming": f"{agg['stocks_with_negative_edge']}/{agg['total_stocks']} ({agg['pct_confirming']:.0f}%)",
+                                "t-statistic": agg.get("t_statistic", "N/A"),
+                                "Significant (t<-1.65)": "Yes" if isinstance(agg.get("t_statistic"), (int, float)) and agg["t_statistic"] < -1.65 else "No",
+                            })
+                    if agg_rows:
+                        st.dataframe(pd.DataFrame(agg_rows), use_container_width=True, hide_index=True)
+
+                    st.markdown("**Interpretation:**")
+                    best_horizon = None
+                    best_pct = 0
+                    for horizon in ["30d", "60d", "90d"]:
+                        agg = cr["aggregate"].get(horizon, {})
+                        if agg.get("pct_confirming", 0) > best_pct:
+                            best_pct = agg["pct_confirming"]
+                            best_horizon = horizon
+
+                    if best_pct >= 70:
+                        st.success(f"Strong validation: {best_pct:.0f}% of stocks show worse returns after high-entropy signals at the {best_horizon} horizon. The entropy signal generalizes well.")
+                    elif best_pct >= 50:
+                        st.info(f"Moderate validation: {best_pct:.0f}% of stocks confirm the signal at {best_horizon}. The framework has some predictive value but is not universal.")
+                    else:
+                        st.warning(f"Weak validation: only {best_pct:.0f}% confirm at {best_horizon}. The entropy signal may not generalize to this universe, or the threshold needs tuning.")
+
+                    # Per-stock breakdown
+                    st.markdown("#### Per-Stock Results")
+                    per_stock_rows = []
+                    for r in cr["results"]:
+                        row = {"Ticker": r["ticker"], "Signals": r["n_signals"]}
+                        for h in ["30d", "60d", "90d"]:
+                            edge = r.get(f"edge_{h}")
+                            if edge is not None:
+                                row[f"Edge {h}"] = f"{edge:+.2f}%"
+                                row[f"Hit Rate {h}"] = f"{r.get(f'hit_rate_{h}', 0):.0f}%"
+                        per_stock_rows.append(row)
+                    st.dataframe(pd.DataFrame(per_stock_rows), use_container_width=True, hide_index=True)
+
+                    if cr["errors"]:
+                        with st.expander(f"Errors ({cr['n_errors']})"):
+                            st.dataframe(pd.DataFrame(cr["errors"]), use_container_width=True, hide_index=True)
+
+        else:  # Analyst Target Comparison
+            with acc_col1:
+                custom_tickers_analyst = st.text_area(
+                    "Test Universe (one per line)",
+                    value="AAPL\nMSFT\nNVDA\nJPM\nGS\nJNJ\nXOM\nAMZN",
+                    height=200, key="acc_tickers_analyst"
+                )
+                base_wacc_acc = st.number_input("Base WACC (%)", min_value=1.0, max_value=30.0, value=10.0, step=0.5, key="acc_wacc") / 100
+                run_analyst = st.button("Run Comparison", type="primary", use_container_width=True, key="run_analyst")
+
+            if run_analyst or "analyst_results" in st.session_state:
+                if run_analyst:
+                    ticker_list = [t.strip().upper() for t in custom_tickers_analyst.strip().split("\n") if t.strip()]
+                    with st.spinner(f"Analyzing {len(ticker_list)} stocks vs analyst targets..."):
+                        analyst_results = run_analyst_comparison(
+                            tickers=ticker_list, base_wacc=base_wacc_acc,
+                        )
+                        st.session_state["analyst_results"] = analyst_results
+
+                ar = st.session_state.get("analyst_results", {})
+                if "error" in ar:
+                    st.warning(ar["error"])
+                else:
+                    with acc_col2:
+                        st.markdown("#### DCF vs Analyst Consensus")
+                        st.caption(f"Comparing standard and entropy-adjusted DCF against analyst mean price targets for {ar['n_stocks']} stocks.")
+
+                    comp = ar.get("method_comparison", {})
+                    if comp:
+                        m1, m2 = st.columns(2)
+                        m1.metric("Entropy-Adjusted Closer", f"{comp.get('Entropy-Adjusted', 0)} stocks")
+                        m2.metric("Standard DCF Closer", f"{comp.get('Standard', 0)} stocks")
+
+                    # Detailed table
+                    display_rows = []
+                    for r in ar["results"]:
+                        row = {
+                            "Ticker": r["ticker"],
+                            "Price": f"${r.get('current_price', 0):.2f}" if r.get("current_price") else "N/A",
+                            "Analyst Target": f"${r['analyst_target']:.2f}" if r.get("analyst_target") else "N/A",
+                            "Standard DCF": f"${r['dcf_standard']:.2f}" if r.get("dcf_standard") else "N/A",
+                            "Entropy DCF": f"${r['dcf_entropy_adjusted']:.2f}" if r.get("dcf_entropy_adjusted") else "N/A",
+                            "Entropy Score": r.get("entropy_score", "N/A"),
+                            "Closer": r.get("closer_to_analyst", "N/A"),
+                        }
+                        display_rows.append(row)
+                    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+
+                    st.markdown("**Note:** Analyst targets reflect 12-month forward expectations and incorporate qualitative factors. "
+                                "Our DCF is a pure quantitative model. The comparison shows whether entropy adjustment "
+                                "moves valuations in a direction consistent with market consensus.")
+
+    # ---- METHODOLOGY TAB ----
+    with tab_method:
+        st.subheader("Methodology")
+        st.caption("How this tool works and why it works this way.")
+
+        st.markdown("""
+### Overview
+
+This tool combines **traditional valuation** (DCF, financial ratios) with an **entropy intelligence layer** built on information theory. The core thesis: traditional metrics tell you what a stock is worth *today*, but entropy tells you whether the *regime* around that stock is changing — and therefore whether today's valuation assumptions will hold tomorrow.
+
+---
+
+### 1. Shannon Entropy (Uncertainty Measurement)
+
+**What:** Measures the disorder/uncertainty in a stock's return distribution.
+
+**How:** Returns are discretized into histogram bins, then Shannon entropy is computed:
+
+H(X) = -sum( p(x) * log(p(x)) )
+
+Higher entropy means returns are spread across many bins (unpredictable). Lower entropy means returns are concentrated (predictable).
+
+**Why it matters:** A stock with high Shannon entropy has a wider range of possible outcomes. This should be reflected in the discount rate.
+
+**Reference:** Shannon, C.E. (1948). "A Mathematical Theory of Communication."
+
+---
+
+### 2. Transfer Entropy (Directional Information Flow)
+
+**What:** Measures how much knowing Asset X's past reduces uncertainty about Asset Y's future — beyond what Y's own past tells you.
+
+**How:**
+
+TE(X->Y) = H(Y_future | Y_past) - H(Y_future | Y_past, X_past)
+
+Computed by discretizing returns, building joint probability distributions, and measuring conditional entropy reduction.
+
+**Why it matters:** Correlation tells you assets move together. Transfer entropy tells you *who leads and who follows*. If SPY leads a stock (high TE from SPY to stock), the stock is a market follower. If the stock leads SPY, it may be a market driver.
+
+**Reference:** Schreiber, T. (2000). "Measuring Information Transfer."
+
+---
+
+### 3. Regime Detection (Changepoint Analysis)
+
+**What:** Identifies points in time where the statistical properties of returns fundamentally change.
+
+**How:** Uses the PELT (Pruned Exact Linear Time) algorithm from the `ruptures` library. PELT finds changepoints by minimizing a cost function that penalizes both poor segment fits and too many segments.
+
+**Why it matters:** A stock that has undergone recent regime changes is in a period of structural uncertainty. Valuations calibrated to the old regime may not hold.
+
+**Reference:** Killick, R., Fearnhead, P., Eckley, I.A. (2012). "Optimal Detection of Changepoints with a Linear Computational Cost."
+
+---
+
+### 4. Correlation Stability (Entropy Collapse Detection)
+
+**What:** Monitors whether the rolling correlation between a stock and its benchmarks (SPY, sector ETF) is stable or has collapsed.
+
+**How:** Computes 60-day rolling Pearson correlation. If the mean recent correlation drops below |0.1|, the relationship is flagged as "collapsed" — a permanent structural break.
+
+**Why it matters:** Diversification relies on stable correlations. When a stock's correlation to its sector or the market collapses, it signals the stock is decoupling from normal market dynamics — a risk that standard models miss.
+
+**Inspired by:** Case 4 (Europe Energy Crisis) — EU-Russia gas correlation collapsed permanently after 2022.
+
+---
+
+### 5. Composite Entropy Score (0-100)
+
+**What:** Synthesizes the four entropy dimensions into a single actionable score.
+
+**How:** Weighted average of four component scores:
+
+| Component | Weight | Scoring Method |
+|-----------|--------|----------------|
+| Regime Instability | 30% | 20 points per changepoint + recency bonus (30 pts if <30 days, 15 pts if <60 days) |
+| Relationship Stress | 25% | (1 - abs(correlation)) * 60; collapsed = 80 |
+| Uncertainty | 25% | (Shannon entropy - 2.0) / 2.0 * 100, capped at 0-100 |
+| Information Flow | 20% | abs(net transfer entropy) * 5000, capped at 100 |
+
+**Interpretation:**
+- **>70:** HIGH — Rules are actively changing. Structural break risk.
+- **45-70:** MODERATE — Unusual dynamics detected. Monitor closely.
+- **25-45:** LOW — Stable regime. Normal market behavior.
+- **<25:** VERY LOW — Highly predictable within current regime.
+
+---
+
+### 6. Entropy-Adjusted DCF
+
+**What:** Modifies the traditional DCF discount rate based on the entropy score.
+
+**How:**
+
+adjusted_WACC = base_WACC + (entropy_score / 100)^0.7 * max_premium
+
+The exponent 0.7 creates a concave curve — moderate entropy (30-60) has meaningful impact, while the marginal effect diminishes at extreme scores. Default max premium is 6%.
+
+**Why it matters:** A stock in a high-entropy regime faces more uncertainty about future cash flows. The discount rate should reflect this. A stable regime (low entropy) means the base WACC is appropriate. A disrupted regime (high entropy) demands a higher discount rate.
+
+**Novel contribution:** No existing tool dynamically adjusts DCF discount rates based on information-theoretic regime analysis.
+
+---
+
+### 7. Signal Backtesting
+
+**What:** Tests whether high-entropy signals predict negative forward returns.
+
+**How:**
+1. Compute rolling Shannon entropy (60-day window) over 2-5 years of history
+2. Flag dates where entropy exceeds mean + N standard deviations
+3. Cluster nearby signals (>10 days apart = separate signal)
+4. Measure forward returns at 30, 60, and 90 days after each signal
+5. Compare signal returns against unconditional baseline returns
+
+**What to look for:**
+- **Negative edge:** Signal returns should be worse than baseline
+- **High hit rate:** >50% of signals should precede negative returns
+- **Statistical significance:** t-statistic < -1.65 (90% confidence one-tailed)
+
+---
+
+### Data Sources & Limitations
+
+| Source | What | Limitations |
+|--------|------|-------------|
+| yfinance | Prices, fundamentals, analyst targets | Free but may have gaps; not institutional grade |
+| scipy.stats | Shannon entropy computation | Well-established, no known issues |
+| ruptures | Changepoint detection (PELT) | Sensitivity depends on penalty parameter |
+| OpenAI | AI-generated analysis summary | May hallucinate; always verify against numbers |
+
+**Key limitations:**
+- **DCF assumes positive FCF** — Companies with negative FCF cannot be valued via DCF
+- **Transfer entropy needs sufficient data** — Short periods (<6 months) produce noisy estimates
+- **Entropy score weights are heuristic** — The 30/25/25/20 weighting is a judgment call, not empirically optimized
+- **Backtest is in-sample** — Threshold is computed on the same data used for testing (future work: walk-forward validation)
+- **No transaction costs** — Backtest returns don't account for trading friction
+
+---
+
+### References
+
+1. Shannon, C.E. (1948). "A Mathematical Theory of Communication." *Bell System Technical Journal*, 27(3), 379-423.
+2. Schreiber, T. (2000). "Measuring Information Transfer." *Physical Review Letters*, 85(2), 461.
+3. Killick, R., Fearnhead, P., Eckley, I.A. (2012). "Optimal Detection of Changepoints with a Linear Computational Cost." *JASA*, 107(500), 1590-1598.
+4. MGMT 69000 Case Studies: Tariff Shock (textual entropy), Europe Energy (structural collapse), Japan Carry Trade (transfer entropy).
+        """)
 
     # ---- DETAILS TAB ----
     with tab_detail:
