@@ -13,11 +13,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+import yfinance as yf
 
 from config import SYSTEM_PROMPT, TOOL_DEFINITIONS
 from market_data import get_returns, get_price_data
 from entropy_tools import shannon_entropy, net_transfer_entropy, rolling_entropy, detect_regimes, correlation_stability
-from valuation import get_company_info, compute_dcf, entropy_adjusted_wacc
+from valuation import get_company_info, compute_dcf, entropy_adjusted_wacc, find_peers, get_historical_trends, monte_carlo_dcf
+from heatmap import compute_sector_heatmap
 from entropy_radar import run_entropy_radar
 from backtest import backtest_entropy_signals
 from accuracy import run_cross_stock_backtest, run_analyst_comparison
@@ -27,6 +29,155 @@ from accuracy import run_cross_stock_backtest, run_analyst_comparison
 # ---------------------------------------------------------------------------
 load_dotenv()
 st.set_page_config(page_title="Entropy Finance", page_icon="📊", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Custom CSS — clean professional finance aesthetic
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    /* Global font */
+    .stApp {
+        font-family: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
+    }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+        background-color: #F6F8FA;
+        border-radius: 8px;
+        padding: 4px;
+        border: 1px solid #E5E7EB;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 6px;
+        padding: 8px 16px;
+        color: #6B7280;
+        font-weight: 500;
+        font-size: 0.85rem;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #FFFFFF;
+        color: #1B6B4A;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background-color: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+        padding: 14px 18px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    [data-testid="stMetricLabel"] {
+        color: #6B7280;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 500;
+    }
+    [data-testid="stMetricValue"] {
+        color: #111827;
+        font-weight: 700;
+        font-size: 1.15rem;
+    }
+
+    /* Dataframe */
+    [data-testid="stDataFrame"] {
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
+    /* Dividers */
+    hr {
+        border-color: #E5E7EB;
+        opacity: 0.6;
+    }
+
+    /* Info/warning boxes */
+    .stAlert {
+        border-radius: 10px;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #F9FAFB;
+        border-right: 1px solid #E5E7EB;
+    }
+
+    /* Subheader accent */
+    h3 {
+        color: #1B6B4A;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        border-bottom: 2px solid #D1FAE5;
+        padding-bottom: 6px;
+    }
+
+    /* Main title */
+    h1 {
+        color: #111827;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+    }
+
+    /* Caption text */
+    .stCaption {
+        color: #9CA3AF;
+    }
+
+    /* Button styling */
+    .stButton > button {
+        background-color: #1B6B4A;
+        color: #FFFFFF;
+        font-weight: 600;
+        border: none;
+        border-radius: 8px;
+        padding: 8px 24px;
+        transition: all 0.2s;
+        box-shadow: 0 1px 3px rgba(27,107,74,0.2);
+    }
+    .stButton > button:hover {
+        background-color: #15573D;
+        color: #FFFFFF;
+        box-shadow: 0 2px 6px rgba(27,107,74,0.3);
+    }
+
+    /* Number input */
+    [data-testid="stNumberInput"] input {
+        border: 1px solid #D1D5DB;
+        border-radius: 8px;
+        color: #FFFFFF;
+    }
+
+    /* Select box */
+    [data-testid="stSelectbox"] > div > div {
+        border: 1px solid #D1D5DB;
+        border-radius: 8px;
+    }
+
+    /* Chat messages */
+    [data-testid="stChatMessage"] {
+        background-color: #F9FAFB;
+        border: 1px solid #E5E7EB;
+        border-radius: 10px;
+        color: #1F2937;
+    }
+    [data-testid="stChatMessage"] p,
+    [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] span {
+        color: #1F2937 !important;
+    }
+
+    /* Expander */
+    .streamlit-expanderHeader {
+        background-color: #F6F8FA;
+        border-radius: 8px;
+        font-weight: 500;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 api_key = os.environ.get("OPENAI_API_KEY", "")
 client = OpenAI(api_key=api_key) if api_key else None
@@ -48,6 +199,55 @@ def fmt_pct(n):
 def fmt_ratio(n):
     if n is None: return "N/A"
     return f"{n:.2f}"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_dcf_recommendations(ticker: str) -> dict:
+    """Compute suggested WACC and terminal growth for a ticker using CAPM."""
+    try:
+        info = yf.Ticker(ticker).info
+        beta = info.get("beta", 1.0) or 1.0
+        revenue_growth = info.get("revenueGrowth")
+        sector = info.get("sector", "")
+
+        # CAPM-based cost of equity
+        risk_free = 0.043       # ~10Y US Treasury
+        market_premium = 0.055  # long-run equity risk premium
+        cost_of_equity = risk_free + beta * market_premium
+
+        # Rough WACC: blend equity and debt cost
+        total_debt = info.get("totalDebt", 0) or 0
+        market_cap = info.get("marketCap", 1) or 1
+        debt_ratio = total_debt / (total_debt + market_cap)
+        cost_of_debt = 0.05 * (1 - 0.21)  # after-tax ~4%
+        wacc = cost_of_equity * (1 - debt_ratio) + cost_of_debt * debt_ratio
+        wacc_pct = round(wacc * 100, 1)
+        wacc_pct = max(5.0, min(20.0, wacc_pct))  # clamp to reasonable range
+
+        # Terminal growth suggestion based on growth profile
+        if revenue_growth is not None and revenue_growth > 0.15:
+            tg = 3.5
+            tg_reason = "above-average growth company"
+        elif revenue_growth is not None and revenue_growth > 0.05:
+            tg = 3.0
+            tg_reason = "moderate growth profile"
+        elif sector in ("Utilities", "Consumer Defensive", "Real Estate"):
+            tg = 2.0
+            tg_reason = "stable/defensive sector"
+        else:
+            tg = 2.5
+            tg_reason = "mature company"
+
+        wacc_reason = f"Beta={beta:.2f}, Rf=4.3%, ERP=5.5%"
+
+        return {
+            "wacc": wacc_pct,
+            "wacc_reason": wacc_reason,
+            "terminal_growth": tg,
+            "tg_reason": tg_reason,
+        }
+    except Exception:
+        return {}
 
 def score_color(score):
     if score > 70: return "🔴"
@@ -87,16 +287,62 @@ def execute_chat_tool(name, args):
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.title("📊 Entropy Finance")
-    st.caption("Valuation + Entropy Radar")
+    st.markdown("""
+    <div style="text-align:center; padding: 16px 0 8px 0;">
+        <div style="font-size: 2.2rem; font-weight: 800; color: #1B6B4A; letter-spacing: -0.03em; line-height: 1.1;">
+            Entropy<br>Finance
+        </div>
+        <div style="font-size: 0.78rem; color: #6B7280; margin-top: 4px; letter-spacing: 0.08em; text-transform: uppercase;">
+            Valuation + Entropy Intelligence
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    ticker = st.text_input("Ticker", value="AAPL", placeholder="AAPL, NVDA, TSLA...")
-    period = st.selectbox("Period", ["6mo", "1y", "2y", "5y"], index=1)
-    analyze_btn = st.button("🔍 Analyze", type="primary", use_container_width=True)
+    st.markdown("---")
 
-    with st.expander("DCF Parameters"):
-        discount_rate = st.number_input("Discount Rate (WACC %)", min_value=1.0, max_value=30.0, value=10.0, step=0.5, format="%.1f") / 100
-        terminal_growth = st.number_input("Terminal Growth Rate (%)", min_value=0.0, max_value=10.0, value=3.0, step=0.5, format="%.1f") / 100
+    st.markdown('<p style="font-size:0.75rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; margin-bottom:4px;">Stock Ticker</p>', unsafe_allow_html=True)
+    ticker = st.text_input("Ticker", value="AAPL", placeholder="e.g. AAPL, NVDA, TSLA", label_visibility="collapsed")
+
+    st.markdown('<p style="font-size:0.75rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; margin-bottom:4px;">Analysis Period</p>', unsafe_allow_html=True)
+    period = st.selectbox("Period", ["6mo", "1y", "2y", "5y"], index=1, label_visibility="collapsed")
+
+    st.markdown("")
+    analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
+
+    st.markdown("---")
+
+    st.markdown('<p style="font-size:0.75rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; margin-bottom:2px;">DCF Parameters</p>', unsafe_allow_html=True)
+    st.markdown('<p style="font-size:0.72rem; color:#374151; margin-bottom:2px;">WACC (%)</p>', unsafe_allow_html=True)
+    discount_rate = st.number_input("WACC", min_value=1.0, max_value=30.0, value=10.0, step=0.5, format="%.1f", label_visibility="collapsed") / 100
+    st.markdown('<p style="font-size:0.72rem; color:#374151; margin-bottom:2px;">Terminal Growth (%)</p>', unsafe_allow_html=True)
+    terminal_growth = st.number_input("Terminal Growth", min_value=0.0, max_value=10.0, value=3.0, step=0.5, format="%.1f", label_visibility="collapsed") / 100
+
+    # Ticker-specific recommendations
+    recs = get_dcf_recommendations(ticker)
+    if recs:
+        st.markdown(f"""
+        <div style="padding: 10px; background-color: #FFF7ED; border-radius: 8px; border: 1px solid #FED7AA; margin-top: 8px;">
+            <p style="font-size: 0.7rem; color: #9A3412; margin: 0; font-weight: 600;">Suggested for {ticker}</p>
+            <p style="font-size: 0.68rem; color: #374151; margin: 4px 0 0 0; line-height: 1.5;">
+                <b>WACC: {recs['wacc']}%</b> — {recs['wacc_reason']}<br>
+                <b>Terminal Growth: {recs['terminal_growth']}%</b> — {recs['tg_reason']}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    st.markdown("""
+    <div style="padding: 12px; background-color: #ECFDF5; border-radius: 8px; border: 1px solid #D1FAE5;">
+        <p style="font-size: 0.72rem; color: #1B6B4A; margin: 0; font-weight: 600;">How it works</p>
+        <p style="font-size: 0.7rem; color: #374151; margin: 4px 0 0 0; line-height: 1.4;">
+            Enter a ticker and hit Analyze. This tool combines traditional DCF valuation with entropy-based regime detection to surface hidden risks.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+    st.markdown('<p style="font-size: 0.65rem; color: #9CA3AF; text-align: center;">MGMT 69000 &middot; Purdue MSF &middot; DRIVER Framework</p>', unsafe_allow_html=True)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -120,6 +366,12 @@ if analyze_btn or "cached_analysis" not in st.session_state:
                                     discount_rate=wacc_adj["adjusted_wacc"] / 100,
                                     terminal_growth=terminal_growth)
 
+        # Peer comparison and historical trends
+        with st.spinner("Finding comparable peers..."):
+            peers = find_peers(tkr)
+        with st.spinner("Loading historical trends..."):
+            historical = get_historical_trends(tkr)
+
         # Cache everything for re-rendering
         st.session_state["cached_analysis"] = {
             "info": info,
@@ -128,6 +380,8 @@ if analyze_btn or "cached_analysis" not in st.session_state:
             "wacc_adj": wacc_adj,
             "prices": prices,
             "radar": radar,
+            "peers": peers,
+            "historical": historical,
             "ticker": tkr,
         }
 
@@ -155,6 +409,8 @@ if "cached_analysis" in st.session_state:
     wacc_adj = cached["wacc_adj"]
     prices = cached["prices"]
     radar = cached["radar"]
+    peers = cached.get("peers", {})
+    historical = cached.get("historical", {})
     tkr = cached["ticker"]
 
     # ================================================================
@@ -175,8 +431,8 @@ if "cached_analysis" in st.session_state:
     # ================================================================
     # TABS
     # ================================================================
-    tab_val, tab_radar, tab_flow, tab_backtest, tab_accuracy, tab_chat, tab_method, tab_detail = st.tabs([
-        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow",
+    tab_val, tab_radar, tab_flow, tab_heatmap, tab_backtest, tab_accuracy, tab_chat, tab_method, tab_detail = st.tabs([
+        "📈 Valuation", "🎯 Entropy Radar", "🔀 Information Flow", "🗺 Sector Heatmap",
         "🔬 Backtest", "🎯 Accuracy", "💬 AI Chat", "📖 Methodology", "📋 Details",
     ])
 
@@ -197,6 +453,79 @@ if "cached_analysis" in st.session_state:
         c10.metric("Profit Margin", fmt_pct(info['profit_margin']))
         c11.metric("ROE", fmt_pct(info['roe']))
         c12.metric("Div Yield", fmt_pct(info['dividend_yield']))
+
+        # ---- METRICS WRITE-UP ----
+        st.divider()
+        st.subheader("What These Metrics Tell Us")
+
+        writeup_parts = []
+
+        # Valuation assessment
+        pe = info.get("pe_ratio")
+        pb = info.get("pb_ratio")
+        ev_ebitda = info.get("ev_ebitda")
+        if pe is not None:
+            if pe > 35:
+                writeup_parts.append(f"The **P/E ratio of {pe:.1f}x** indicates the market is pricing in strong future earnings growth — investors are paying a premium for each dollar of current earnings. This typically reflects high growth expectations but also means the stock is vulnerable to disappointment if growth slows.")
+            elif pe > 20:
+                writeup_parts.append(f"The **P/E ratio of {pe:.1f}x** suggests a moderately valued stock. The market expects solid earnings growth, but the premium is not extreme. This is consistent with a mature growth company.")
+            elif pe > 0:
+                writeup_parts.append(f"The **P/E ratio of {pe:.1f}x** suggests the stock is valued conservatively. This could mean the market sees limited growth ahead, or it could represent a value opportunity if earnings improve.")
+
+        if ev_ebitda is not None:
+            if ev_ebitda > 25:
+                writeup_parts.append(f"An **EV/EBITDA of {ev_ebitda:.1f}x** is elevated, meaning the enterprise is valued at a significant multiple of its operating cash generation. This is common in high-growth or asset-light businesses but implies that a large portion of the valuation depends on future performance.")
+            elif ev_ebitda > 12:
+                writeup_parts.append(f"An **EV/EBITDA of {ev_ebitda:.1f}x** is in the moderate range — the market values the business reasonably relative to its cash generation capacity.")
+            elif ev_ebitda > 0:
+                writeup_parts.append(f"An **EV/EBITDA of {ev_ebitda:.1f}x** is relatively low, suggesting the business generates strong cash flow relative to its enterprise value. This can signal a value opportunity or reflect limited growth expectations.")
+
+        # Profitability
+        op_margin = info.get("operating_margin")
+        profit_margin = info.get("profit_margin")
+        roe = info.get("roe")
+        if op_margin is not None and profit_margin is not None:
+            if op_margin > 0.25:
+                writeup_parts.append(f"**Operating margin of {op_margin*100:.1f}%** and **net margin of {profit_margin*100:.1f}%** indicate a highly profitable business with strong pricing power and cost discipline. These margins suggest a durable competitive advantage.")
+            elif op_margin > 0.12:
+                writeup_parts.append(f"**Operating margin of {op_margin*100:.1f}%** and **net margin of {profit_margin*100:.1f}%** show solid profitability. The business converts revenue to profit at a healthy rate, though there may be room for operational improvement.")
+            elif op_margin > 0:
+                writeup_parts.append(f"**Operating margin of {op_margin*100:.1f}%** and **net margin of {profit_margin*100:.1f}%** are relatively thin, which could indicate a competitive industry, high cost structure, or a business still scaling toward profitability.")
+
+        if roe is not None:
+            if roe > 0.25:
+                writeup_parts.append(f"**ROE of {roe*100:.1f}%** demonstrates the company is generating strong returns on shareholder equity — it is effectively converting invested capital into profit.")
+            elif roe > 0.10:
+                writeup_parts.append(f"**ROE of {roe*100:.1f}%** shows adequate returns on equity, consistent with a stable business that generates reasonable profit from its capital base.")
+            elif roe > 0:
+                writeup_parts.append(f"**ROE of {roe*100:.1f}%** is below average, suggesting the company may not be deploying shareholder capital as efficiently as peers.")
+
+        # Cash flow
+        fcf = info.get("free_cash_flow")
+        revenue = info.get("revenue")
+        if fcf is not None and revenue is not None and revenue > 0:
+            fcf_margin = fcf / revenue
+            if fcf_margin > 0.15:
+                writeup_parts.append(f"**Free cash flow of {fmt_num(fcf)}** ({fcf_margin*100:.1f}% of revenue) is strong — the business generates significant cash after capital expenditures, providing flexibility for dividends, buybacks, debt reduction, or reinvestment.")
+            elif fcf_margin > 0.05:
+                writeup_parts.append(f"**Free cash flow of {fmt_num(fcf)}** ({fcf_margin*100:.1f}% of revenue) is positive and healthy, indicating the business can fund operations and some growth internally.")
+            elif fcf > 0:
+                writeup_parts.append(f"**Free cash flow of {fmt_num(fcf)}** ({fcf_margin*100:.1f}% of revenue) is positive but modest relative to revenue, which may limit the company's financial flexibility.")
+
+        # Beta / risk
+        beta = info.get("beta")
+        if beta is not None:
+            if beta > 1.3:
+                writeup_parts.append(f"A **beta of {beta:.2f}** means this stock is significantly more volatile than the market — it tends to amplify market moves, making it a higher-risk holding.")
+            elif beta > 0.8:
+                writeup_parts.append(f"A **beta of {beta:.2f}** indicates the stock moves roughly in line with the broader market, suggesting moderate systematic risk.")
+            else:
+                writeup_parts.append(f"A **beta of {beta:.2f}** suggests the stock is less volatile than the market — it may offer defensive characteristics during downturns.")
+
+        if writeup_parts:
+            st.markdown("\n\n".join(writeup_parts))
+        else:
+            st.info("Insufficient data to generate a metrics summary.")
 
         st.divider()
 
@@ -246,7 +575,228 @@ if "cached_analysis" in st.session_state:
                     dc3.markdown(f"**Entropy-Adjusted DCF:**\n- {dcf_adjusted['error']}")
                 fcf_df = pd.DataFrame(dcf["projected_fcf"])
                 fcf_df.columns = ["Year", "Projected FCF", "PV of FCF"]
+                fcf_df["Projected FCF"] = fcf_df["Projected FCF"].apply(lambda x: fmt_num(x))
+                fcf_df["PV of FCF"] = fcf_df["PV of FCF"].apply(lambda x: fmt_num(x))
                 st.dataframe(fcf_df, use_container_width=True, hide_index=True)
+
+        # ---- PEER COMPARISON ----
+        st.divider()
+        st.subheader("Peer Comparison")
+
+        if "error" in peers:
+            st.warning(peers["error"])
+        elif peers.get("peers"):
+            peer_list = peers["peers"]
+            target = peers["target"]
+            medians = peers.get("peer_medians", {})
+
+            st.caption(f"Top {len(peer_list)} most financially similar companies in **{peers.get('sector', 'N/A')}**")
+
+            # Build comparison table
+            rows = []
+            for p in [target] + peer_list:
+                row = {
+                    "Ticker": p["ticker"],
+                    "Company": p.get("name", p["ticker"]),
+                    "Market Cap": fmt_num(p.get("market_cap")),
+                    "P/E": fmt_ratio(p.get("pe_ratio")),
+                    "EV/EBITDA": fmt_ratio(p.get("ev_ebitda")),
+                    "Op. Margin": fmt_pct(p.get("operating_margin")),
+                    "Rev. Growth": fmt_pct(p.get("revenue_growth")),
+                    "ROIC": f"{p['roic']*100:.1f}%" if p.get("roic") is not None else "N/A",
+                }
+                rows.append(row)
+
+            comp_df = pd.DataFrame(rows)
+            st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+            # Ranking summary
+            rank_metrics = {
+                "P/E": ("pe_ratio", "lower"),
+                "Operating Margin": ("operating_margin", "higher"),
+                "Revenue Growth": ("revenue_growth", "higher"),
+                "ROIC": ("roic", "higher"),
+            }
+            rank_items = []
+            all_peers_with_target = [target] + peer_list
+            for label, (key, direction) in rank_metrics.items():
+                vals = [(p["ticker"], p.get(key)) for p in all_peers_with_target if p.get(key) is not None]
+                if not vals:
+                    continue
+                vals.sort(key=lambda x: x[1], reverse=(direction == "higher"))
+                rank = next((i + 1 for i, (t_name, _) in enumerate(vals) if t_name == tkr), None)
+                if rank is not None:
+                    rank_items.append(f"**{label}:** #{rank} of {len(vals)}")
+
+            if rank_items:
+                st.markdown("**Peer Ranking:** " + " · ".join(rank_items))
+        else:
+            st.info("No peer data available for this stock.")
+
+        # ---- HISTORICAL TRENDS ----
+        st.divider()
+        st.subheader("Historical Trends")
+
+        annual = historical.get("annual_data", [])
+        price_perf = historical.get("price_performance", {})
+
+        if annual and len(annual) >= 2:
+            # Price performance summary
+            if price_perf:
+                perf_cols = st.columns(len(price_perf))
+                for i, (label, ret) in enumerate(price_perf.items()):
+                    delta_color = "normal" if ret > 0 else "inverse"
+                    perf_cols[i].metric(f"{label} Return", f"{ret:+.1f}%", delta_color=delta_color)
+
+            # Build charts for the 4 annual metrics
+            years = [d["year"] for d in annual]
+
+            chart_configs = [
+                ("Revenue Growth (%)", "revenue_growth", "#636EFA"),
+                ("Operating Margin (%)", "operating_margin", "#EF553B"),
+                ("ROIC (%)", "roic", "#00CC96"),
+                ("P/E Ratio", "pe_ratio", "#AB63FA"),
+            ]
+
+            col_left, col_right = st.columns(2)
+
+            for idx, (title, key, color) in enumerate(chart_configs):
+                values = [d.get(key) for d in annual]
+                # Only plot if we have at least 2 non-None values
+                valid = [(y, v) for y, v in zip(years, values) if v is not None]
+                if len(valid) < 2:
+                    continue
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=[v[0] for v in valid],
+                    y=[v[1] for v in valid],
+                    mode="lines+markers",
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8),
+                    name=title,
+                ))
+                fig.update_layout(
+                    title=title,
+                    height=280,
+                    template="plotly_white",
+                    margin=dict(l=40, r=20, t=40, b=30),
+                    yaxis_title=title,
+                    xaxis=dict(tickmode="array", tickvals=[v[0] for v in valid]),
+                    showlegend=False,
+                )
+
+                target_col = col_left if idx % 2 == 0 else col_right
+                target_col.plotly_chart(fig, use_container_width=True)
+
+                # One-liner interpretation under each chart
+                first_val = valid[0][1]
+                last_val = valid[-1][1]
+                change = last_val - first_val
+                if key == "revenue_growth":
+                    if change > 5:
+                        caption = "Revenue growth is accelerating — the top line is expanding faster over time."
+                    elif change < -5:
+                        caption = "Revenue growth is decelerating — top-line expansion is slowing."
+                    else:
+                        caption = "Revenue growth has been relatively stable over this period."
+                elif key == "operating_margin":
+                    if change > 3:
+                        caption = "Operating margins are expanding — the business is becoming more efficient at converting revenue to profit."
+                    elif change < -3:
+                        caption = "Operating margins are compressing — costs are growing faster than revenue."
+                    else:
+                        caption = "Operating margins have held steady, indicating consistent operational efficiency."
+                elif key == "roic":
+                    if change > 3:
+                        caption = "ROIC is improving — each dollar of invested capital is generating more return."
+                    elif change < -3:
+                        caption = "ROIC is declining — capital efficiency is deteriorating."
+                    else:
+                        caption = "ROIC has remained stable, reflecting consistent capital deployment effectiveness."
+                elif key == "pe_ratio":
+                    if change > 5:
+                        caption = "P/E is expanding — the market is willing to pay more per dollar of earnings, signaling rising expectations."
+                    elif change < -5:
+                        caption = "P/E is compressing — the market is discounting future earnings more heavily."
+                    else:
+                        caption = "P/E has been relatively flat, suggesting stable market sentiment toward this stock."
+                else:
+                    caption = ""
+                if caption:
+                    target_col.caption(caption)
+        else:
+            st.info("Insufficient historical data available.")
+
+        # ---- MONTE CARLO DCF ----
+        st.divider()
+        st.subheader("Monte Carlo DCF Simulation")
+        st.caption("Stress-tests the DCF by running 1,500 scenarios with randomized growth, WACC, and terminal growth assumptions.")
+
+        if st.button("Run Monte Carlo Simulation", key="mc_btn"):
+            with st.spinner("Running 1,500 simulations..."):
+                mc = monte_carlo_dcf(tkr, base_wacc=discount_rate,
+                                     base_terminal_growth=terminal_growth)
+            if "error" in mc:
+                st.warning(mc["error"])
+            else:
+                st.session_state["mc_results"] = mc
+
+        mc = st.session_state.get("mc_results")
+        if mc and mc.get("ticker") == tkr:
+            mc_col1, mc_col2, mc_col3, mc_col4 = st.columns(4)
+            mc_col1.metric("Median Intrinsic Value", f"${mc['median']:.2f}")
+            mc_col2.metric("Mean Intrinsic Value", f"${mc['mean']:.2f}")
+            mc_col3.metric("Std Deviation", f"${mc['std']:.2f}")
+            pct = mc['pct_undervalued']
+            mc_col4.metric("Prob. Undervalued", f"{pct:.1f}%",
+                           delta="Buy signal" if pct > 60 else "Caution" if pct < 40 else "Neutral",
+                           delta_color="normal" if pct > 60 else "inverse" if pct < 40 else "off")
+
+            mc_p1, mc_p2, mc_p3, mc_p4, mc_p5 = st.columns(5)
+            mc_p1.metric("10th Pctl", f"${mc['p10']:.2f}")
+            mc_p2.metric("25th Pctl", f"${mc['p25']:.2f}")
+            mc_p3.metric("50th Pctl", f"${mc['p50']:.2f}")
+            mc_p4.metric("75th Pctl", f"${mc['p75']:.2f}")
+            mc_p5.metric("90th Pctl", f"${mc['p90']:.2f}")
+
+            # Distribution chart
+            fig_mc = go.Figure()
+            fig_mc.add_trace(go.Histogram(
+                x=mc["intrinsic_values"],
+                nbinsx=60,
+                marker_color="#1B6B4A",
+                opacity=0.75,
+                name="Simulated Values",
+            ))
+            # Current price line
+            fig_mc.add_vline(x=mc["current_price"], line_dash="dash",
+                             line_color="#DC2626", line_width=2,
+                             annotation_text=f"Current: ${mc['current_price']:.2f}",
+                             annotation_position="top right")
+            # Median line
+            fig_mc.add_vline(x=mc["median"], line_dash="dot",
+                             line_color="#2563EB", line_width=2,
+                             annotation_text=f"Median: ${mc['median']:.2f}",
+                             annotation_position="top left")
+            fig_mc.update_layout(
+                title="Distribution of Intrinsic Values",
+                xaxis_title="Intrinsic Value ($)",
+                yaxis_title="Frequency",
+                template="plotly_white",
+                height=400,
+                showlegend=False,
+                margin=dict(l=50, r=20, t=50, b=40),
+            )
+            st.plotly_chart(fig_mc, use_container_width=True)
+
+            # Interpretation
+            if mc["pct_undervalued"] > 70:
+                st.success(f"**{mc['pct_undervalued']:.1f}%** of scenarios suggest the stock is undervalued. The market price is below the median simulated intrinsic value, indicating potential upside across a wide range of assumptions.")
+            elif mc["pct_undervalued"] > 40:
+                st.info(f"**{mc['pct_undervalued']:.1f}%** of scenarios suggest undervaluation. The stock is near fair value — the current price falls within the core of the simulated distribution.")
+            else:
+                st.warning(f"Only **{mc['pct_undervalued']:.1f}%** of scenarios suggest undervaluation. The majority of simulated intrinsic values fall below the current price, indicating the stock may be overvalued on fundamentals.")
 
     # ---- ENTROPY RADAR TAB ----
     with tab_radar:
@@ -358,6 +908,74 @@ if "cached_analysis" in st.session_state:
                         st.plotly_chart(fig_corr, use_container_width=True)
 
                 st.divider()
+
+    # ---- SECTOR HEATMAP TAB ----
+    with tab_heatmap:
+        st.subheader("Sector Entropy Heatmap")
+        st.caption("Real-time entropy scores across the stock universe — see which sectors and stocks carry the most regime risk right now.")
+
+        if st.button("Scan All Sectors", key="heatmap_btn", type="primary"):
+            with st.spinner("Scanning stocks across all sectors (this may take a minute)..."):
+                hm = compute_sector_heatmap(period=period, max_per_sector=4)
+            if "error" in hm:
+                st.warning(hm["error"])
+            else:
+                st.session_state["heatmap_results"] = hm
+
+        hm = st.session_state.get("heatmap_results")
+        if hm and "error" not in hm:
+            st.markdown(f"**{hm['n_stocks']} stocks analyzed** across {len(hm['sector_averages'])} sectors")
+
+            # Sector averages bar chart
+            sector_avg = hm["sector_averages"]
+            sectors_sorted = sorted(sector_avg.items(), key=lambda x: x[1], reverse=True)
+
+            fig_sectors = go.Figure()
+            s_names = [s[0] for s in sectors_sorted]
+            s_scores = [s[1] for s in sectors_sorted]
+            colors = ["#DC2626" if s > 55 else "#F59E0B" if s > 40 else "#16A34A" for s in s_scores]
+            fig_sectors.add_trace(go.Bar(
+                x=s_scores, y=s_names,
+                orientation="h",
+                marker_color=colors,
+                text=[f"{s:.1f}" for s in s_scores],
+                textposition="outside",
+            ))
+            fig_sectors.update_layout(
+                title="Average Entropy Score by Sector",
+                xaxis_title="Entropy Score (0-100)",
+                template="plotly_white",
+                height=max(300, len(s_names) * 35),
+                margin=dict(l=180, r=40, t=40, b=30),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig_sectors, use_container_width=True)
+
+            # Full heatmap table
+            st.markdown("---")
+            df = hm["results_df"].copy()
+            display_cols = ["ticker", "sector", "composite_score", "regime_instability",
+                           "relationship_stress", "uncertainty", "information_flow", "interpretation"]
+            df_display = df[display_cols].sort_values("composite_score", ascending=False)
+            df_display.columns = ["Ticker", "Sector", "Score", "Regime", "Stress", "Uncertainty", "Flow", "Reading"]
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # Top risk and most stable side by side
+            col_risk, col_stable = st.columns(2)
+            with col_risk:
+                st.markdown("**Highest Entropy (Most Risk)**")
+                for stock in hm["top_risk"][:5]:
+                    score = stock["composite_score"]
+                    color = "#DC2626" if score > 55 else "#F59E0B"
+                    st.markdown(f'<span style="color:{color}; font-weight:700;">{score}</span> — **{stock["ticker"]}** ({stock["sector"]})', unsafe_allow_html=True)
+
+            with col_stable:
+                st.markdown("**Lowest Entropy (Most Stable)**")
+                for stock in hm["most_stable"][:5]:
+                    score = stock["composite_score"]
+                    st.markdown(f'<span style="color:#16A34A; font-weight:700;">{score}</span> — **{stock["ticker"]}** ({stock["sector"]})', unsafe_allow_html=True)
+        elif not hm:
+            st.info("Click **Scan All Sectors** to compute entropy scores across the stock universe.")
 
     # ---- BACKTEST TAB ----
     with tab_backtest:
