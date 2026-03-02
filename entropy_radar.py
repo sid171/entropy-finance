@@ -18,6 +18,12 @@ from entropy_tools import (
     net_transfer_entropy,
     correlation_stability,
 )
+from entropy_calibration import (
+    normalize_shannon_entropy,
+    normalize_transfer_entropy,
+    normalize_changepoint_count,
+    normalize_correlation_stress,
+)
 
 # Sector ETF mapping for automatic peer selection
 SECTOR_ETFS = {
@@ -115,8 +121,9 @@ def run_entropy_radar(ticker: str, sector: str, period: str = "1y") -> dict:
     ent = shannon_entropy(returns)
     results["shannon_entropy"] = round(ent, 4)
 
-    # Uncertainty score: normalize entropy (typical range 2.5-3.8 for daily returns)
-    uncertainty_score = min(100, max(0, (ent - 2.0) / 2.0 * 100))
+    # Uncertainty score: empirically calibrated from p5/p95 across 57 stocks.
+    # Range [2.68, 3.72] nats maps to [0, 100]. See entropy_calibration.py.
+    uncertainty_score = normalize_shannon_entropy(ent)
 
     # 3. Rolling entropy
     roll_ent = rolling_entropy(returns, window=60)
@@ -131,17 +138,19 @@ def run_entropy_radar(ticker: str, sector: str, period: str = "1y") -> dict:
     regimes = detect_regimes(returns)
     results["regimes"] = regimes
 
-    # Regime score: more recent changepoints = higher score
+    # Regime score: empirically calibrated from p5/p95 across 57 stocks.
+    # Observed range [1, 11] changepoints maps to [0, 80], leaving 20 points
+    # for recency bonus. See entropy_calibration.py.
     n_cp = regimes["n_changepoints"]
-    regime_score = min(100, n_cp * 20)  # Each changepoint adds 20 points
-    # Boost if a changepoint is recent (within last 60 days)
+    regime_score = normalize_changepoint_count(n_cp)
+    # Recency bonus: recent changepoints signal active regime transitions
     if regimes["changepoint_dates"]:
         last_cp = pd.to_datetime(regimes["changepoint_dates"][-1])
         days_since = (returns.index[-1] - last_cp).days
         if days_since < 30:
-            regime_score = min(100, regime_score + 30)
+            regime_score = min(100, regime_score + 20)
         elif days_since < 60:
-            regime_score = min(100, regime_score + 15)
+            regime_score = min(100, regime_score + 10)
 
     # 5. Transfer entropy against comparisons
     comparisons = get_comparison_tickers(sector)
@@ -159,10 +168,13 @@ def run_entropy_radar(ticker: str, sector: str, period: str = "1y") -> dict:
             te["comparison"] = comp_ticker
             te_results.append(te)
 
-            # Information flow score: higher asymmetry = more interesting
+            # Information flow score: empirically calibrated from p5/p95 of
+            # |net_te| across 57 stocks vs SPY/sector ETF. See entropy_calibration.py.
             asymmetry = abs(te["net_te"])
-            information_flow_score = max(information_flow_score,
-                                         min(100, asymmetry * 5000))
+            information_flow_score = max(
+                information_flow_score,
+                normalize_transfer_entropy(asymmetry),
+            )
         except Exception:
             continue
 
@@ -181,13 +193,13 @@ def run_entropy_radar(ticker: str, sector: str, period: str = "1y") -> dict:
             corr["rolling_data"] = rolling_corr_data
             corr_results.append(corr)
 
-            # Stress score: low/collapsed correlation = high stress
+            # Stress score: empirically calibrated from p5/p95 of abs rolling
+            # correlation across 57 stocks. See entropy_calibration.py.
             if corr["is_collapsed"]:
-                relationship_stress_score = max(relationship_stress_score, 80)
+                relationship_stress_score = max(relationship_stress_score, 90)
             elif corr["mean_recent_correlation"] is not None:
-                # Lower abs correlation with market = more stress
                 abs_corr = abs(corr["mean_recent_correlation"])
-                stress = (1 - abs_corr) * 60
+                stress = normalize_correlation_stress(abs_corr)
                 relationship_stress_score = max(relationship_stress_score, stress)
         except Exception:
             continue

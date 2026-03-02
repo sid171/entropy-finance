@@ -744,7 +744,7 @@ if "cached_analysis" in st.session_state:
 
         mc = st.session_state.get("mc_results")
         if mc and mc.get("ticker") == tkr:
-            mc_col1, mc_col2, mc_col3, mc_col4 = st.columns(4)
+            mc_col1, mc_col2, mc_col3, mc_col4, mc_col5 = st.columns(5)
             mc_col1.metric("Median Intrinsic Value", f"${mc['median']:.2f}")
             mc_col2.metric("Mean Intrinsic Value", f"${mc['mean']:.2f}")
             mc_col3.metric("Std Deviation", f"${mc['std']:.2f}")
@@ -752,6 +752,9 @@ if "cached_analysis" in st.session_state:
             mc_col4.metric("Prob. Undervalued", f"{pct:.1f}%",
                            delta="Buy signal" if pct > 60 else "Caution" if pct < 40 else "Neutral",
                            delta_color="normal" if pct > 60 else "inverse" if pct < 40 else "off")
+            wacc_std_pct = mc.get("wacc_std", mc.get("base_wacc", 10) * 0.15)
+            mc_col5.metric("WACC σ (data-driven)", f"{wacc_std_pct:.2f}%",
+                           help="Estimated from 2Y rolling beta volatility (CAPM) + 10Y Treasury rate changes.")
 
             mc_p1, mc_p2, mc_p3, mc_p4, mc_p5 = st.columns(5)
             mc_p1.metric("10th Pctl", f"${mc['p10']:.2f}")
@@ -1105,10 +1108,13 @@ if "cached_analysis" in st.session_state:
                 # Summary metrics
                 with bt_col2:
                     m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Signals Found", bt["n_signals"])
-                    m2.metric("Trading Days", bt["n_trading_days"])
+                    m1.metric("OOS Signals Found", bt["n_signals"])
+                    m2.metric("OOS Trading Days", bt.get("n_oos_trading_days", bt["n_trading_days"]))
                     m3.metric("Entropy Threshold", f"{bt['threshold']:.3f}")
-                    m4.metric("Signal Rate", f"{bt['n_signals'] / (bt['n_trading_days'] / 252):.1f}/year")
+                    oos_days = bt.get("n_oos_trading_days", bt["n_trading_days"])
+                    m4.metric("Signal Rate", f"{bt['n_signals'] / (oos_days / 252):.1f}/year")
+                    if bt.get("split_date"):
+                        st.caption(f"Threshold calibrated on in-sample data (before {bt['split_date']}). Signals and baseline evaluated on out-of-sample data only.")
 
                 # Signal vs Baseline comparison table
                 st.markdown("#### Signal Returns vs Baseline")
@@ -1188,9 +1194,11 @@ if "cached_analysis" in st.session_state:
             st.markdown("""
             **How this works:**
             1. Computes rolling Shannon entropy over the full history
-            2. Flags dates where entropy exceeds the threshold (mean + N standard deviations)
-            3. Measures what happens to the stock price 30, 60, and 90 days after each signal
-            4. Compares signal returns against the unconditional baseline
+            2. Splits the history 60/40: first 60% calibrates the threshold (in-sample), remaining 40% is the test set (out-of-sample)
+            3. Threshold = in-sample mean + N standard deviations — calibrated without look-ahead
+            4. Flags out-of-sample dates where entropy exceeds the threshold
+            5. Measures what happens to the stock price 30, 60, and 90 days after each signal
+            6. Compares signal returns against the out-of-sample unconditional baseline
 
             **If high entropy is predictive**, signal returns should be worse than baseline returns.
 
