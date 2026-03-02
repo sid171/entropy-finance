@@ -12,7 +12,6 @@ from openai import OpenAI
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
-import numpy as np
 import yfinance as yf
 
 from config import SYSTEM_PROMPT, TOOL_DEFINITIONS

@@ -332,8 +332,7 @@ def _estimate_wacc_std(ticker: str, info: dict, base_wacc: float) -> float:
         Estimated WACC standard deviation (as a fraction, e.g. 0.015 = 1.5%).
     """
     ERP = 0.05   # equity risk premium (Damodaran long-run estimate)
-    TAX = 0.21   # US corporate tax rate
-    FALLBACK_STD = 0.015  # cross-sectional median from Damodaran (2023)
+    # Fallback: Damodaran (2023) cross-sectional median σ(WACC) ≈ 1.5%
 
     # ── Capital structure weights ─────────────────────────────────────────
     mkt_cap  = info.get("marketCap", 0) or 0

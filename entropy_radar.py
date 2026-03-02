@@ -8,9 +8,8 @@ actionable intelligence layer:
 - Composite entropy score: how much is "the game" changing?
 """
 
-import numpy as np
 import pandas as pd
-from market_data import get_returns, get_price_data
+from market_data import get_returns
 from entropy_tools import (
     shannon_entropy,
     rolling_entropy,

@@ -11,7 +11,6 @@ signals are generated and evaluated only on the remaining data
 """
 
 import numpy as np
-import pandas as pd
 from market_data import get_price_data
 from entropy_tools import rolling_entropy
 
