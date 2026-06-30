@@ -1,102 +1,106 @@
-# Fintropy
+Fintropy
 
-[![CI](https://github.com/sid171/entropy-finance/actions/workflows/ci.yml/badge.svg)](https://github.com/sid171/entropy-finance/actions/workflows/ci.yml)
 
-A financial analysis terminal that combines traditional valuation (DCF, ratios) with an **entropy intelligence layer** — detecting when the rules around a stock are changing using information theory.
+A financial analysis terminal that combines traditional valuation (DCF, Monte Carlo, ratios) with an entropy intelligence layer — detecting when the rules around a stock are changing using information theory.
 
-## What It Does
+What It Does
 
 Enter a ticker and get instant analysis across four dimensions:
 
-1. **Valuation** — DCF intrinsic value, key ratios (P/E, P/B, EV/EBITDA, ROE, margins)
-2. **Entropy Radar** — Composite entropy score (0-100) showing regime stability, with price chart overlaid with detected changepoints and rolling entropy
-3. **Information Flow** — Transfer entropy reveals who leads whom (stock vs market, stock vs sector ETF), plus correlation health monitoring
-4. **AI Analysis** — GPT-powered synthesis of valuation + entropy data with actionable insights
 
-### The Entropy Radar Score
+Valuation — DCF intrinsic value, a 1,500-scenario Monte Carlo DCF, an entropy-adjusted WACC, and key ratios (P/E, P/B, EV/EBITDA, ROE, margins) with peer comparison
+Entropy Radar — Composite entropy score (0-100) showing regime stability, with price chart overlaid with detected changepoints and rolling entropy
+Information Flow — Transfer entropy reveals who leads whom (stock vs market, stock vs sector ETF), plus correlation health monitoring
+AI Analysis — GPT-powered synthesis of valuation + entropy data with actionable insights
 
-The composite score (0-100) answers: **"How much is the game changing around this stock?"**
 
-| Component | Weight | What It Measures |
-|-----------|--------|-----------------|
-| Regime Instability | 30% | Changepoint frequency and recency |
-| Relationship Stress | 25% | Correlation stability vs market/sector |
-| Uncertainty | 25% | Shannon entropy of return distribution |
-| Information Flow | 20% | Transfer entropy asymmetry |
+The Entropy Radar Score
 
-| Score | Interpretation |
-|-------|---------------|
-| >70 | HIGH — Rules are actively changing. Structural break risk. |
-| 45-70 | MODERATE — Unusual dynamics. Monitor for regime transition. |
-| 25-45 | LOW — Stable regime. Normal market dynamics. |
-| <25 | VERY LOW — Highly predictable within current regime. |
+The composite score (0-100) answers: "How much is the game changing around this stock?"
 
-## Entropy Frameworks
+ComponentWeightWhat It MeasuresRegime Instability30%Changepoint frequency and recencyRelationship Stress25%Correlation stability vs market/sectorUncertainty25%Shannon entropy of return distributionInformation Flow20%Transfer entropy asymmetry
+
+ScoreInterpretation>70HIGH — Rules are actively changing. Structural break risk.45-70MODERATE — Unusual dynamics. Monitor for regime transition.25-45LOW — Stable regime. Normal market dynamics.<25VERY LOW — Highly predictable within current regime.
+
+Entropy Frameworks
 
 Five frameworks from information theory applied to financial markets:
 
-| Framework | What It Measures | Inspired By |
-|-----------|-----------------|-------------|
-| **Shannon Entropy** | Uncertainty/disorder in returns | Case 1: Tariff Shock |
-| **Transfer Entropy** | Directional information flow (who leads whom) | Case 5: Japan Carry Trade |
-| **Rolling Entropy** | Time-varying uncertainty | Case 4: Europe Energy Crisis |
-| **Regime Detection** | Structural breaks (changepoint detection) | Case 4: Correlation Collapse |
-| **Entropy Collapse** | Permanent correlation breakdown | Case 4: EU-Russia structural break |
+FrameworkWhat It MeasuresInspired ByShannon EntropyUncertainty/disorder in returnsCase 1: Tariff ShockTransfer EntropyDirectional information flow (who leads whom)Case 5: Japan Carry TradeRolling EntropyTime-varying uncertaintyCase 4: Europe Energy CrisisRegime DetectionStructural breaks (changepoint detection)Case 4: Correlation CollapseEntropy CollapsePermanent correlation breakdownCase 4: EU-Russia structural break
 
-## Setup
+Valuation Engine
 
-### Prerequisites
-- Python 3.11+
-- OpenAI API key
+The valuation layer does not just report a DCF — it stress-tests and adjusts it:
 
-### Installation
 
-```bash
+DCF — intrinsic value from projected free cash flows discounted at a CAPM-based WACC.
+Monte Carlo DCF — 1,500 simulations randomizing WACC, growth, and terminal growth. The WACC uncertainty is derived per ticker via CAPM error propagation rather than a universal fixed assumption:
+
+
+  σ(WACC) ≈ (E/V) × √[ (ERP × σ_β)² + σ_Rf² ]
+
+
+Entropy-Adjusted WACC — layers a regime-risk premium onto the base discount rate as a concave function of the composite entropy score, up to +600 bps at maximum instability. At entropy = 0, no premium is applied. This embeds regime uncertainty directly into the valuation rather than leaving it as a qualitative caveat.
+Peer comparison — ranks financially similar companies via a multi-factor similarity score.
+
+
+Setup
+
+Prerequisites
+
+
+Python 3.11+
+OpenAI API key
+
+
+Installation
+
 git clone https://github.com/sid171/entropy-finance.git
 cd entropy-finance
 pip install -r requirements.txt
-```
 
-### Configuration
+Configuration
 
-```bash
 cp .env.example .env
 # Edit .env and add your OpenAI API key
-```
 
-### Run
+Run
 
-```bash
 streamlit run app.py
-```
 
-## Architecture
+Architecture
 
-```
-entropy-finance-app/
-├── app.py              # Streamlit UI — 4-tab terminal with sidebar chat
-├── entropy_radar.py    # Composite entropy scoring engine
-├── entropy_tools.py    # 5 entropy computation functions
-├── market_data.py      # yfinance data layer
-├── valuation.py        # DCF model + company fundamentals
-├── config.py           # System prompts + OpenAI tool definitions
-├── requirements.txt    # Dependencies
+entropy-finance/
+├── app.py                  # Streamlit UI — 4-tab terminal with sidebar chat
+├── entropy_radar.py        # Composite Entropy Radar scoring engine
+├── entropy_tools.py        # 5 entropy functions (Shannon, transfer, rolling, regime, correlation)
+├── entropy_calibration.py  # Empirical p5/p95 normalization across 57 stocks / 11 GICS sectors
+├── valuation.py            # DCF, Monte Carlo DCF, entropy-adjusted WACC, peer comparison
+├── backtest.py             # In-sample / out-of-sample entropy signal backtester
+├── heatmap.py              # Parallel sector entropy heatmap (ThreadPoolExecutor)
+├── accuracy.py             # Cross-stock validation of the entropy framework
+├── market_data.py          # yfinance data layer
+├── config.py               # System prompts + OpenAI tool definitions
+├── requirements.txt        # Dependencies
 ├── tests/
-│   └── test_entropy.py # Pytest suite (12 tests)
-├── product/            # DRIVER methodology artifacts
+│   ├── test_entropy.py      # 12 tests — entropy computations + boundary conditions
+│   ├── test_calibration.py  # 26 tests — empirical p5/p95 normalization
+│   ├── test_valuation.py    # 15 tests — DCF, Monte Carlo, entropy-adjusted WACC
+│   └── test_backtest.py     #  9 tests — in-sample / out-of-sample signal backtest
+├── product/                # DRIVER methodology artifacts
 │   ├── product-overview.md
 │   └── product-roadmap.md
 └── .github/
     └── workflows/
-        └── ci.yml      # CI/CD — tests on Python 3.11 + 3.12
-```
+        └── ci.yml          # CI/CD — ruff lint + pytest on Python 3.11 & 3.12
 
-### How It Works
+How It Works
 
-```
 User enters ticker → Analyze button
     │
-    ├── Valuation: yfinance → company info + DCF model
+    ├── Valuation: yfinance → company info → DCF
+    │      ├── Monte Carlo DCF (1,500 scenarios, CAPM-propagated σ(WACC))
+    │      └── Entropy-adjusted WACC (regime-risk premium up to +600 bps)
     │
     └── Entropy Radar: yfinance → returns
          ├── Shannon entropy (uncertainty level)
@@ -108,41 +112,57 @@ User enters ticker → Analyze button
 
 Sidebar chat: OpenAI function calling → entropy tools
     LLM decides which tool to call → computes on real data → explains results
-```
 
-## Testing
+Testing
 
-```bash
+62 tests across four suites, run on every push via GitHub Actions on Python 3.11 and 3.12:
+
+SuiteTestsFocustest_entropy.py12Entropy computations + boundary conditionstest_calibration.py26Empirical p5/p95 normalizationtest_valuation.py15DCF, Monte Carlo, entropy-adjusted WACCtest_backtest.py9In-sample / out-of-sample signal backtest
+
+The CI pipeline gates a ruff lint stage before the test stage, and enforces a 90% coverage threshold on the pure-logic modules (entropy_tools, entropy_calibration, backtest) that run without live network calls.
+
+Run locally:
+
 python -m pytest tests/ -v
-```
 
-## Tech Stack
+Tech Stack
 
-- **UI:** Streamlit (tabbed layout + sidebar chat)
-- **LLM:** OpenAI GPT-4o-mini (function calling for chat)
-- **Data:** yfinance (prices, fundamentals, cash flows)
-- **Entropy:** scipy.stats, numpy, ruptures (PELT)
-- **Charts:** Plotly (interactive price + entropy charts)
-- **CI/CD:** GitHub Actions (pytest on Python 3.11/3.12)
 
-## DRIVER Methodology
+UI: Streamlit (tabbed layout + sidebar chat)
+LLM: OpenAI GPT-4o-mini (function calling for chat)
+Data: yfinance (prices, fundamentals, cash flows)
+Entropy: scipy.stats, numpy, ruptures (PELT)
+Charts: Plotly (interactive price + entropy charts)
+CI/CD: GitHub Actions (ruff lint + pytest on Python 3.11/3.12)
+
+
+DRIVER Methodology
 
 Built following the DRIVER framework (MGMT 69000):
 
-1. **Define** — Researched entropy/info-theory libraries (ruptures, scipy, infomeasure) and financial app patterns
-2. **Represent** — 3-section roadmap: Entropy Engine, Chat + UI, CI/CD + Polish
-3. **Implement** — Iterative build: entropy tools first (with tests), then valuation, then entropy radar composite, then UI
-4. **Validate** — 12 passing tests + live demo with real market data
-5. **Evolve** — Public GitHub repo with CI/CD
-6. **Reflect** — Key learning: entropy concepts from case studies become more powerful when synthesized into a composite score
 
-## References
+Define — Researched entropy/info-theory libraries (ruptures, scipy, infomeasure) and financial app patterns
+Represent — 3-section roadmap: Entropy Engine, Chat + UI, CI/CD + Polish
+Implement — Iterative build: entropy tools first (with tests), then valuation, then entropy radar composite, then UI
+Validate — 62 passing tests + live demo with real market data
+Evolve — Public GitHub repo with CI/CD
+Reflect — Key learning: entropy concepts from case studies become more powerful when synthesized into a composite score
 
-- Shannon, C.E. (1948). "A Mathematical Theory of Communication"
-- Schreiber, T. (2000). "Measuring Information Transfer" — Transfer entropy formulation
-- Killick, R., Fearnhead, P., Eckley, I.A. (2012). "Optimal Detection of Changepoints" — PELT algorithm
-- MGMT 69000 Case Studies: Tariff Shock (textual entropy), Europe Energy (structural collapse), Japan Carry Trade (transfer entropy)
 
----
+Attribution
 
-*MGMT 69000: Mastering AI for Finance | Purdue MSF | DRIVER Framework*
+Built following the DRIVER framework using the DRIVER plugin by Cinder Zhang.
+
+Open-source libraries used: Streamlit, OpenAI Python SDK, yfinance, pandas, NumPy, SciPy, ruptures, Plotly, pytest, ruff.
+
+References
+
+
+Shannon, C.E. (1948). "A Mathematical Theory of Communication"
+Schreiber, T. (2000). "Measuring Information Transfer" — Transfer entropy formulation
+Killick, R., Fearnhead, P., Eckley, I.A. (2012). "Optimal Detection of Changepoints" — PELT algorithm
+MGMT 69000 Case Studies: Tariff Shock (textual entropy), Europe Energy (structural collapse), Japan Carry Trade (transfer entropy)
+
+
+
+MGMT 69000: Mastering AI for Finance | Purdue MSF | DRIVER Framework
