@@ -117,7 +117,12 @@ Testing
 
 62 tests across four suites, run on every push via GitHub Actions on Python 3.11 and 3.12:
 
-SuiteTestsFocustest_entropy.py12Entropy computations + boundary conditionstest_calibration.py26Empirical p5/p95 normalizationtest_valuation.py15DCF, Monte Carlo, entropy-adjusted WACCtest_backtest.py9In-sample / out-of-sample signal backtest
+| Suite                | Tests | Focus                                        |
+| -------------------- | ----- | -------------------------------------------- |
+| test_entropy.py      | 12    | Entropy computations + boundary conditions   |
+| test_calibration.py  | 26    | Empirical p5/p95 normalization               |
+| test_valuation.py    | 15    | DCF, Monte Carlo, entropy-adjusted WACC      |
+| test_backtest.py     | 9     | In-sample / out-of-sample signal backtest    |
 
 The CI pipeline gates a ruff lint stage before the test stage, and enforces a 90% coverage threshold on the pure-logic modules (entropy_tools, entropy_calibration, backtest) that run without live network calls.
 
